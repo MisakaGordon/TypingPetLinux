@@ -114,6 +114,18 @@ impl UiState {
     }
 }
 
+/// 拖动时的目标窗口位置。
+///
+/// `gesture_offset` 是 GtkGestureDrag 给的偏移，它的参考系是**窗口（surface）自身** ——
+/// 窗口一动，这个参考系就跟着动。因此必须叠加到**当前**窗口位置上；
+/// 若叠加到"按下那一刻"的旧位置上，自身位移会被算两遍，表现为拖动时抽搐/卡顿。
+pub fn drag_target(current_window: Point, gesture_offset: Point) -> Point {
+    Point::new(
+        current_window.x + gesture_offset.x,
+        current_window.y + gesture_offset.y,
+    )
+}
+
 /// X11 root 坐标（物理像素）→ 窗口/宠物框坐标（GDK 逻辑像素）。
 ///
 /// 两者在缩放会话下相差 scale 倍，混用会让悬停判定失效（表现为桌宠疯狂闪烁）。
@@ -163,45 +175,60 @@ pub struct PetUi {
 }
 
 pub fn run(options: Options) -> Result<()> {
-    let runtime = Runtime::bootstrap(options)?;
-    println!("== TypingPet ==");
-    println!("{}", runtime.description());
-    println!("config: {}", runtime.options.config_path.display());
-
-    let session = typingpet_input::session_kind().to_string();
-    let input_status = match runtime.input.backend() {
-        typingpet_input::Backend::Evdev => "evdev（可用）".to_string(),
-        typingpet_input::Backend::Mock => "mock（脚本按键）".to_string(),
-    };
-    let tray: SharedTray = Arc::new(std::sync::Mutex::new(tray::TrayState::new(
-        input_status,
-        session,
-    )));
-    let quit = Arc::new(AtomicBool::new(false));
-
-    if !runtime.options.no_tray {
-        tray::spawn(tray.clone());
-    }
-
-    let runtime = Rc::new(RefCell::new(runtime));
     let app = gtk::Application::builder()
         .application_id("io.github.typingpet.Linux")
         .build();
 
-    let runtime_for_activate = runtime.clone();
-    let tray_for_activate = tray.clone();
-    let quit_for_activate = quit.clone();
+    // 所有初始化都放进 activate：
+    // 1) 只有主实例会收到 activate，因此第二次启动不会抢 /dev/input、也不会注册出第二个托盘图标；
+    // 2) GTK 把"第二次启动"转成一次 activate 信号，于是它天然成为"打开设置窗口"的入口
+    //    （系统托盘把新图标收进隐藏项时，这是最可靠的入口）。
+    let existing_ui: Rc<RefCell<Option<Rc<PetUi>>>> = Rc::new(RefCell::new(None));
+    let pending_options: Rc<RefCell<Option<Options>>> = Rc::new(RefCell::new(Some(options)));
+
+    let slot = existing_ui.clone();
     app.connect_activate(move |app| {
-        let ui = PetUi::build(
-            app,
-            runtime_for_activate.clone(),
-            tray_for_activate.clone(),
-            quit_for_activate.clone(),
-        );
+        if let Some(ui) = slot.borrow().as_ref().cloned() {
+            println!("已有实例在运行：再次启动 = 打开设置窗口");
+            ui.open_settings();
+            return;
+        }
+        let Some(options) = pending_options.borrow_mut().take() else {
+            return;
+        };
+
+        let runtime = match Runtime::bootstrap(options) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("启动失败：{error:#}");
+                std::process::exit(1);
+            }
+        };
+        println!("== TypingPet ==");
+        println!("{}", runtime.description());
+        println!("config: {}", runtime.options.config_path.display());
+
+        let session = typingpet_input::session_kind().to_string();
+        let input_status = match runtime.input.backend() {
+            typingpet_input::Backend::Evdev => "evdev（可用）".to_string(),
+            typingpet_input::Backend::Mock => "mock（脚本按键）".to_string(),
+        };
+        let tray: SharedTray = Arc::new(std::sync::Mutex::new(tray::TrayState::new(
+            input_status,
+            session,
+        )));
+        let quit = Arc::new(AtomicBool::new(false));
+        if !runtime.options.no_tray {
+            tray::spawn(tray.clone());
+        }
+
+        let runtime = Rc::new(RefCell::new(runtime));
+        let ui = PetUi::build(app, runtime, tray, quit);
         if ui.runtime.borrow().options.open_settings.unwrap_or(false) {
             ui.clone().open_settings();
         }
         PetUi::start_frame_loop(&ui);
+        *slot.borrow_mut() = Some(ui);
     });
 
     app.run_with_args::<&str>(&[]);
@@ -321,6 +348,7 @@ impl PetUi {
         attach_motion(&window, &ui);
         attach_drag(&window, &ui);
         attach_scroll(&window, &ui);
+        attach_secondary_click(&window, &ui);
 
         println!(
             "pointer: 来源={}",
@@ -1404,27 +1432,16 @@ fn attach_motion(window: &gtk::Window, ui: &Rc<PetUi>) {
 
 fn attach_drag(window: &gtk::Window, ui: &Rc<PetUi>) {
     let drag = gtk::GestureDrag::new();
-    let start = Rc::new(RefCell::new(Point::ZERO));
 
     {
-        let start = start.clone();
-        let ui = ui.clone();
-        drag.connect_drag_begin(move |_, _, _| {
-            *start.borrow_mut() = ui.state.borrow().position;
-        });
-    }
-    {
-        let start = start.clone();
         let ui = ui.clone();
         let window = window.clone();
         drag.connect_drag_update(move |_, offset_x, offset_y| {
             if ui.state.borrow().click_through {
                 return;
             }
-            let target = {
-                let start = *start.borrow();
-                Point::new(start.x + offset_x, start.y + offset_y)
-            };
+            let current = ui.state.borrow().position;
+            let target = drag_target(current, Point::new(offset_x, offset_y));
             ui.state.borrow_mut().position = target;
             apply_position(&window, target.x, target.y);
         });
@@ -1443,6 +1460,22 @@ fn attach_drag(window: &gtk::Window, ui: &Rc<PetUi>) {
         });
     }
     window.add_controller(drag);
+}
+
+/// 右键点宠物 = 打开设置窗口。
+///
+/// 系统托盘可能把新图标收进"隐藏项"，那样用户就没有入口打开设置，
+/// 所以再给一个直接入口（位置锁定时窗口点击穿透，此时自然点不到）。
+fn attach_secondary_click(window: &gtk::Window, ui: &Rc<PetUi>) {
+    let click = gtk::GestureClick::new();
+    click.set_button(3);
+    {
+        let ui = ui.clone();
+        click.connect_released(move |_, _, _, _| {
+            ui.open_settings();
+        });
+    }
+    window.add_controller(click);
 }
 
 fn attach_scroll(window: &gtk::Window, ui: &Rc<PetUi>) {
@@ -1505,6 +1538,26 @@ mod tests {
             avoid_settled: true,
             wayland_note_printed: false,
         }
+    }
+
+    #[test]
+    fn drag_target_tracks_the_pointer_without_double_counting() {
+        // 抓取点距窗口左上角 100px。光标每次右移 10px，窗口必须精确跟随，
+        // 且抓取点始终贴在光标下（旧实现用"按下时的位置 + 偏移"会把自身位移算两遍 → 抽搐）。
+        let grab = Point::new(100.0, 100.0);
+        let mut window = Point::ZERO;
+        for step in 1..=5 {
+            let pointer = Point::new(100.0 + 10.0 * f64::from(step), 100.0);
+            let widget = Point::new(pointer.x - window.x, pointer.y - window.y);
+            let offset = Point::new(widget.x - grab.x, widget.y - grab.y);
+            window = drag_target(window, offset);
+            assert!(
+                (window.x + grab.x - pointer.x).abs() < 0.001,
+                "第 {step} 步抓取点偏离光标：{}",
+                window.x + grab.x - pointer.x
+            );
+        }
+        assert_eq!(window, Point::new(50.0, 0.0));
     }
 
     #[test]

@@ -191,7 +191,14 @@ pub fn spawn(shared: SharedTray) {
         Ok(handle) => {
             TRAY_ACTIVE.store(true, Ordering::Relaxed);
             let _ = TRAY_HANDLE.set(handle);
-            println!("tray: 已注册 StatusNotifierItem");
+            println!(
+                "tray: 已注册 StatusNotifierItem（D-Bus: org.kde.StatusNotifierItem-{}-1）",
+                std::process::id()
+            );
+            println!(
+                "tray: 看不到图标时：点系统托盘的「^」展开隐藏项，或在「系统托盘设置 → 条目」\
+                 里把 TypingPet 设为显示；也可以直接再启动一次本程序打开设置窗口"
+            );
         }
         Err(error) => {
             eprintln!("tray: 注册失败（当前桌面没有 SNI 宿主？）: {error}");
