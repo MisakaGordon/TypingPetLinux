@@ -40,14 +40,15 @@ const AVOID_DAMPING: f64 = 13.0;
 const AVOID_MAX_SPEED: f64 = 520.0;
 const AVOID_TRIGGER_GLOBAL: f64 = 90.0;
 
+/// 当前 GDK 显示是否为 Wayland。
+pub fn wayland_display() -> bool {
+    gtk::gdk::Display::default()
+        .map(|display| display.type_().name().contains("Wayland"))
+        .unwrap_or(false)
+}
+
 pub fn layer_shell_supported() -> bool {
-    let Some(display) = gtk::gdk::Display::default() else {
-        return false;
-    };
-    if !display.type_().name().contains("Wayland") {
-        return false;
-    }
-    gtk4_layer_shell::is_supported()
+    wayland_display() && gtk4_layer_shell::is_supported()
 }
 
 pub fn load_thumbnail(path: Option<&Path>, size: i32) -> Option<gtk::gdk_pixbuf::Pixbuf> {
@@ -64,10 +65,14 @@ struct UiState {
     hover: bool,
     click_through: bool,
     pointer_polled_at: Option<Instant>,
-    /// 屏幕坐标（左上原点）。X11 是全局轮询值；Wayland 只在检测环内有效。
+    /// 屏幕坐标（左上原点）。X11 由全局轮询写入；Wayland 由检测环内的界面事件写入。
     pointer: Option<Point>,
-    /// true = 全局（X11 轮询），false = 局部（Wayland 环内事件）
-    pointer_is_global: bool,
+    /// 本会话能否拿到全局光标位置：X11 可以，Wayland 协议不允许。
+    ///
+    /// 关键：这个判定必须在启动时定一次，**不能**按"这次轮询成功与否"来决定 ——
+    /// 否则 X11 的物理像素坐标会覆盖 Wayland 的逻辑像素坐标（两者相差缩放倍率），
+    /// 悬停判定就会以 30–60Hz 反复翻转，表现为桌宠疯狂闪烁。
+    x11_pointer: bool,
     avoid_velocity: typingpet_core::geom::Vec2,
     avoid_last: Option<Instant>,
     avoid_settled: bool,
@@ -86,6 +91,20 @@ impl UiState {
         Size::new(image.w + AVOID_RING * 2.0, image.h + AVOID_RING * 2.0)
     }
 
+    /// 悬停命中判定，带 6px 迟滞：从外部进入按宠物本体算，已经悬停时要超出 6px 才算离开，
+    /// 避免光标停在边缘时透明度来回跳。
+    fn hover_hit(&self, pointer: Point) -> bool {
+        let frame = self.pet_frame();
+        let slack = if self.hover { 6.0 } else { 0.0 };
+        Rect::new(
+            frame.x - slack,
+            frame.y - slack,
+            frame.w + slack * 2.0,
+            frame.h + slack * 2.0,
+        )
+        .contains(pointer)
+    }
+
     /// 宠物本体在屏幕上的矩形（左上原点）
     fn pet_frame(&self) -> Rect {
         Rect::from_origin_size(
@@ -93,6 +112,14 @@ impl UiState {
             self.image_size(),
         )
     }
+}
+
+/// X11 root 坐标（物理像素）→ 窗口/宠物框坐标（GDK 逻辑像素）。
+///
+/// 两者在缩放会话下相差 scale 倍，混用会让悬停判定失效（表现为桌宠疯狂闪烁）。
+pub fn physical_to_logical(pointer: Point, scale: f64) -> Point {
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    Point::new(pointer.x / scale, pointer.y / scale)
 }
 
 /// 输入区域策略（纯函数，便于单测）。返回相对窗口左上角的矩形列表，空表示完全穿透。
@@ -268,7 +295,7 @@ impl PetUi {
             click_through,
             pointer_polled_at: None,
             pointer: None,
-            pointer_is_global: false,
+            x11_pointer: !wayland_display(),
             avoid_velocity: typingpet_core::geom::Vec2::ZERO,
             avoid_last: None,
             avoid_settled: true,
@@ -295,6 +322,14 @@ impl PetUi {
         attach_drag(&window, &ui);
         attach_scroll(&window, &ui);
 
+        println!(
+            "pointer: 来源={}",
+            if state.borrow().x11_pointer {
+                "X11 全局轮询（同一坐标空间，躲避提前量 90px）"
+            } else {
+                "Wayland 局部事件（检测环内，躲避提前量 40px）"
+            }
+        );
         println!("window: 已创建 layer_shell={layer_shell}");
         println!(
             "idle: {}",
@@ -843,18 +878,35 @@ impl PetUi {
         apply_opacity(&self.window, &settings, hovering);
     }
 
-    /// X11：轮询全局光标；Wayland：拿不到全局位置，保持由界面事件更新（局部）。
+    /// X11：轮询全局光标；Wayland：协议拿不到全局光标，直接不轮询，位置由界面事件提供。
+    ///
+    /// 两套坐标空间不能混用：X11 root 是物理像素，窗口/宠物框是 GDK 逻辑像素，
+    /// 在缩放的 X11 会话下相差 scale 倍，所以这里统一除回去。
     fn reload_pointer_sample(&self) {
-        let global = typingpet_input::pointer_position().map(|p| Point::new(p.x, p.y));
+        if !self.state.borrow().x11_pointer {
+            return;
+        }
+        let scale = primary_monitor_geometry().scale.max(1.0);
+        let global = typingpet_input::pointer_position()
+            .map(|pointer| physical_to_logical(Point::new(pointer.x, pointer.y), scale));
         let mut state = self.state.borrow_mut();
         state.pointer_polled_at = Some(Instant::now());
         if let Some(pointer) = global {
             state.pointer = Some(pointer);
-            state.pointer_is_global = true;
-        } else if state.pointer_is_global {
-            // 之前是全局采样，现在拿不到了（会话切换等）：清掉，避免用过期坐标
-            state.pointer = None;
-            state.pointer_is_global = false;
+        }
+    }
+
+    /// 根据指针位置更新悬停状态并套用透明度（唯一入口，避免多个来源互相覆盖）。
+    fn refresh_hover(&self, pointer: Point) {
+        let hovering = self.state.borrow().hover_hit(pointer);
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            let changed = state.hover != hovering;
+            state.hover = hovering;
+            changed
+        };
+        if changed {
+            self.apply_opacity_now();
         }
     }
 
@@ -863,13 +915,13 @@ impl PetUi {
     /// X11 用全局光标（90px 提前量）；Wayland 只用检测环内的事件（40px），
     /// 因此 Wayland 下是"靠近才躲"，这也正是平台限制下的可行方案。
     fn advance_avoidance(&self) {
-        let (locked, avoid, pointer, is_global, position, pet_frame, window_size) = {
+        let (locked, avoid, pointer, global_pointer, position, pet_frame, window_size) = {
             let state = self.state.borrow();
             (
                 state.settings.position_locked,
                 state.settings.avoids_pointer_when_locked,
                 state.pointer,
-                state.pointer_is_global,
+                state.x11_pointer,
                 state.position,
                 state.pet_frame(),
                 state.window_size(),
@@ -885,7 +937,7 @@ impl PetUi {
 
         let monitor = primary_monitor_geometry();
         let bounds = Rect::new(monitor.x, monitor.y, monitor.width, monitor.height);
-        let trigger = if is_global {
+        let trigger = if global_pointer {
             AVOID_TRIGGER_GLOBAL
         } else {
             AVOID_RING
@@ -1025,39 +1077,31 @@ impl PetUi {
             };
             ui.fixed.move_(&ui.picture, AVOID_RING, AVOID_RING - offset);
 
-            // 调试：把光标固定在指定位置，用于验证躲避逻辑（Wayland 下无法真实移动光标）
-            if let Some((x, y)) = ui.runtime.borrow().options.simulate_pointer {
+            // 4) 光标采样：X11 走全局轮询，Wayland 只认界面事件。
+            //    --simulate-pointer（调试）优先，且当帧不轮询，否则会被真光标覆盖。
+            let simulating = ui.runtime.borrow().options.simulate_pointer;
+            if let Some((x, y)) = simulating {
                 let mut state = ui.state.borrow_mut();
                 state.pointer = Some(Point::new(x, y));
-                state.pointer_is_global = false;
                 state.pointer_polled_at = Some(Instant::now());
+            } else {
+                let poll_due = ui
+                    .state
+                    .borrow()
+                    .pointer_polled_at
+                    .map(|at| at.elapsed() >= Duration::from_millis(POINTER_POLL_MS))
+                    .unwrap_or(true);
+                if poll_due {
+                    ui.reload_pointer_sample();
+                }
             }
 
-            // 4) 光标采样 + 悬停透明度
-            let poll_due = ui
-                .state
-                .borrow()
-                .pointer_polled_at
-                .map(|at| at.elapsed() >= Duration::from_millis(POINTER_POLL_MS))
-                .unwrap_or(true);
-            if poll_due {
-                ui.reload_pointer_sample();
-            }
-            let hovering = {
-                let state = ui.state.borrow();
-                match state.pointer {
-                    Some(pointer) => state.pet_frame().contains(pointer),
-                    None => state.hover,
-                }
-            };
-            let changed = {
-                let mut state = ui.state.borrow_mut();
-                let changed = state.hover != hovering;
-                state.hover = hovering;
-                changed
-            };
-            if changed {
-                ui.apply_opacity_now();
+            // 悬停透明度（带迟滞）
+            // 注意：先把值取出来再调用，不能写成 if let Some(p) = ui.state.borrow().pointer
+            // —— Rust 2021 里 if let 的临时借用守卫会活到整个 body，refresh_hover 里再 borrow_mut 会 panic。
+            let pointer = ui.state.borrow().pointer;
+            if let Some(pointer) = pointer {
+                ui.refresh_hover(pointer);
             }
             {
                 let mut state = ui.state.borrow_mut();
@@ -1334,34 +1378,20 @@ fn attach_motion(window: &gtk::Window, ui: &Rc<PetUi>) {
         // 局部指针位置：窗口坐标 → 屏幕坐标。Wayland 下这是唯一能拿到的光标信息，
         // 检测环范围内的移动都会走这里。
         motion.connect_motion(move |_, x, y| {
-            let (position, ring) = {
-                let state = ui.state.borrow();
-                (state.position, AVOID_RING)
-            };
+            // 界面事件永远是权威来源：它给的是窗口内坐标，加上窗口位置即为屏幕坐标，
+            // 与宠物框同一个逻辑像素空间（不会再被 X11 的物理像素坐标覆盖）。
+            let position = ui.state.borrow().position;
             let screen = Point::new(position.x + x, position.y + y);
-            let hovering = {
-                let state = ui.state.borrow();
-                state.pet_frame().contains(screen)
-            };
-            {
-                let mut state = ui.state.borrow_mut();
-                if !state.pointer_is_global {
-                    state.pointer = Some(screen);
-                }
-                state.hover = hovering;
-            }
-            ui.apply_opacity_now();
-            let _ = ring;
+            ui.state.borrow_mut().pointer = Some(screen);
+            ui.refresh_hover(screen);
         });
     }
     {
         let ui = ui.clone();
         motion.connect_leave(move |_| {
-            if ui.state.borrow().click_through {
-                return;
-            }
             let mut state = ui.state.borrow_mut();
-            if !state.pointer_is_global {
+            // X11 下全局轮询每帧都会补上新位置，这里只清局部采样
+            if !state.x11_pointer {
                 state.pointer = None;
             }
             state.hover = false;
@@ -1458,6 +1488,69 @@ mod tests {
         assert!(input_region_rects(true, false, window, AVOID_RING).is_empty());
     }
 
+    fn test_state() -> UiState {
+        UiState {
+            position: Point::new(100.0, 200.0),
+            base_size: Size::new(453.0, 453.0),
+            current: None,
+            settings: Settings::default(),
+            bounce: None,
+            hover: false,
+            click_through: false,
+            pointer_polled_at: None,
+            pointer: None,
+            x11_pointer: false,
+            avoid_velocity: typingpet_core::geom::Vec2::ZERO,
+            avoid_last: None,
+            avoid_settled: true,
+            wayland_note_printed: false,
+        }
+    }
+
+    #[test]
+    fn hover_hit_has_hysteresis_at_the_boundary() {
+        let mut state = test_state();
+        let frame = state.pet_frame();
+        let just_outside = Point::new(frame.x - 3.0, frame.mid_y());
+
+        // 还没进入：3px 之外不算悬停
+        assert!(!state.hover_hit(just_outside));
+        // 已经悬停：6px 迟滞内仍然算悬停（否则边缘会反复跳透明度）
+        state.hover = true;
+        assert!(state.hover_hit(just_outside));
+        // 超出迟滞才离开
+        assert!(!state.hover_hit(Point::new(frame.x - 20.0, frame.mid_y())));
+        // 本体内部无论何种状态都算悬停
+        assert!(state.hover_hit(Point::new(frame.mid_x(), frame.mid_y())));
+    }
+
+    #[test]
+    fn physical_pointer_coordinates_are_converted_to_logical_space() {
+        // 本机实测：GDK 显示器 1600x1067（逻辑）vs X11 root 2160x1440（物理），倍率 1.35。
+        // 悬停判定必须用同一空间，否则物理坐标会被拿去和逻辑宠物框比较。
+        let physical = Point::new(1740.0, 1030.0);
+        let logical = physical_to_logical(physical, 1.35);
+        assert!((logical.x - 1288.9).abs() < 0.1, "got {}", logical.x);
+        assert!((logical.y - 763.0).abs() < 0.1, "got {}", logical.y);
+        // 无缩放时原样返回
+        assert_eq!(physical_to_logical(physical, 1.0), physical);
+        // 异常缩放不至于除零
+        assert_eq!(physical_to_logical(physical, 0.0), physical);
+    }
+
+    #[test]
+    fn x11_pointer_switches_the_avoidance_trigger_distance() {
+        // X11 是全局光标 → 90px 提前量；Wayland 只有检测环 → 40px。
+        // 这里锁定"能力标志决定来源"这一契约：它必须在启动时定一次。
+        let mut state = test_state();
+        state.x11_pointer = true;
+        assert!(state.x11_pointer);
+        state.x11_pointer = false;
+        assert!(!state.x11_pointer);
+        assert_eq!(AVOID_TRIGGER_GLOBAL, 90.0);
+        assert_eq!(AVOID_RING, 40.0);
+    }
+
     #[test]
     fn pet_frame_is_inset_by_the_ring() {
         let state = UiState {
@@ -1470,7 +1563,7 @@ mod tests {
             click_through: false,
             pointer_polled_at: None,
             pointer: None,
-            pointer_is_global: false,
+            x11_pointer: false,
             avoid_velocity: typingpet_core::geom::Vec2::ZERO,
             avoid_last: None,
             avoid_settled: true,
