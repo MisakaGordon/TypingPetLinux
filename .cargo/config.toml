@@ -1,0 +1,10 @@
+# cargo 别名：避免把「输入探针」和「主程序」搞混
+#
+#   cargo pet            启动宠物窗口（= run --release -p typingpet）
+#   cargo pet -- --help  给主程序传参数
+#   cargo probe          只跑键输入探针（不开窗口，用于验证权限）
+#
+# 注意：`cargo run -p typingpet-input` 跑的是 **探针**，不是宠物窗口。
+[alias]
+pet = "run --release -p typingpet --"
+probe = "run -p typingpet-input --bin typingpet-probe --"

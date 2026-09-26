@@ -1,0 +1,24 @@
+[package]
+name = "typingpet"
+description = "TypingPet for Linux: a desktop pet that reacts to your typing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+typingpet-core = { path = "../typingpet-core" }
+typingpet-input = { path = "../typingpet-input" }
+anyhow = { workspace = true }
+# v4_12 提供 Picture::set_content_fit / CssProvider::load_from_string（Fedora 44 的 GTK 为 4.22）
+gtk4 = { version = "0.11", optional = true, features = ["v4_12"] }
+gtk4-layer-shell = { version = "0.8", optional = true }
+# blocking：托盘自带线程，不需要 tokio 运行时；async-io 提供 zbus 的 I/O 后端
+ksni = { version = "0.3", optional = true, default-features = false, features = ["blocking", "async-io"] }
+
+[features]
+default = ["gui"]
+gui = ["dep:gtk4", "dep:gtk4-layer-shell", "dep:ksni"]
+
+[[bin]]
+name = "typingpet"
+path = "src/main.rs"

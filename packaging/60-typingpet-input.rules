@@ -1,0 +1,17 @@
+# TypingPet Linux：授予当前登录用户读取键盘设备的权限
+#
+# 只对「当前 seat 的活动用户」临时授予 ACL（登出即失效），
+# 不会把键盘长期开放给所有用户。
+#
+# 安装：
+#   sudo install -m644 packaging/60-typingpet-input.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=input
+#
+# 卸载：
+#   sudo rm /etc/udev/rules.d/60-typingpet-input.rules
+#
+# 说明：Wayland 不提供 macOS CGEventTap 那样的全局按键 API，
+# evdev 是唯一能拿到「任意按键」的途径。TypingPet 只读取 EV_KEY 的
+# 键码与按下状态，不读取字符、不记录、不联网。
+
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess"

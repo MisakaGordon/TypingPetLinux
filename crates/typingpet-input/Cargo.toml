@@ -1,0 +1,20 @@
+[package]
+name = "typingpet-input"
+description = "Global keyboard and pointer input backends for TypingPet on Linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+typingpet-core = { path = "../typingpet-core" }
+anyhow = { workspace = true }
+evdev = "0.13"
+x11rb = { version = "0.14", optional = true }
+
+[features]
+default = ["x11"]
+x11 = ["dep:x11rb"]
+
+[[bin]]
+name = "typingpet-probe"
+path = "src/bin/typingpet_probe.rs"

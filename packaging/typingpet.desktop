@@ -1,0 +1,15 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Type=Application
+Name=TypingPet
+Name[ko]=타이핑 펫
+Comment=A desktop pet that reacts to your typing
+Comment[ko]=키를 누를 때마다 반응하는 데스크톱 펫
+Exec=typingpet
+Icon=input-keyboard
+Terminal=false
+Categories=Utility;
+Keywords=typing;pet;keyboard;
+StartupNotify=false
+# 托盘常驻程序，不进任务栏
+NoDisplay=false

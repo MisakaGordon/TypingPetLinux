@@ -1,0 +1,19 @@
+[package]
+name = "typingpet-core"
+description = "Platform-independent logic for TypingPet (geometry, physics, image picking, key model, config)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# 仅用于读取图片尺寸/校验可解码性；后续 GUI 走 gdk-pixbuf 显示
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+    "tiff",
+    "bmp",
+] }
