@@ -3,4 +3,6 @@
 dist/
 *.xcuserstate
 *.zip
+target/
 
+.vscode/

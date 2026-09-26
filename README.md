@@ -1,90 +1,127 @@
-# Typing Pet for macOS
+# TypingPet for Linux
 
-키를 누를 때마다 원하는 펫 이미지 중 하나를 보여 주는 네이티브 macOS 메뉴 막대 앱입니다.
+按键时会有反应的桌面宠物 —— **Rust + GTK4** 实现的 Linux 原生版本，在 KDE Plasma 6 / Wayland 上开发与验证。
 
-![기본 키보드 고양이](Sources/TypingPet/Resources/pet-idle.png)
+> 本项目源自 macOS 版 [TypingPet](../../)（作者 MisakaGordon，Swift + AppKit/SwiftUI 实现）。
+> **原作者的 macOS 版完整保留在 `macos-swift` 分支**，本分支（`main`）只包含 Linux 版。
 
-Windows용 [swoonqx/TypingPet](https://github.com/swoonqx/TypingPet)에서 아이디어를 얻어 macOS용으로 새로 구현한 비공식 프로젝트입니다. 원본 프로젝트의 소스 코드와 이미지 자산은 포함하지 않습니다.
+按键时宠物会换成随机的反应图并弹一下，0.75 秒没输入就回到待机图；可以给特定键或组合键指定专属图片。
 
-## 다운로드
+![待机图](crates/typingpet/resources/pet-idle.png)
 
-GitHub Releases에서 `TypingPet-macOS-arm64.zip`을 내려받아 압축을 풀고 `TypingPet.app`을 Applications 폴더로 옮깁니다.
+## 功能
 
-현재 공개 빌드는 Apple Silicon 전용 프리릴리스입니다. Apple Developer ID 공증 전까지는 Gatekeeper가 개발자 확인 경고를 표시할 수 있습니다. 소스에서 직접 빌드할 수도 있습니다.
+- **任意按键触发**：随机换反应图（不会连续重复同一张）+ 按强度分级的弹跳动画
+- **特定键反应**：精确匹配的规则优先于随机反应，支持 `Ctrl/Alt/Shift/Super` 组合
+- **待机回归**：0.75 秒无输入回待机图
+- **透明度**：常驻 / 悬停两个值分别可调，立即生效
+- **窗口行为**：始终置顶、位置锁定（鼠标点击穿透）、拖拽移动、滚轮缩放（0.35–1.25）
+- **躲避光标**：光标靠近时宠物自己挪开（X11 90px 提前量；Wayland 为 40px 检测环局部检测）
+- **开机自启**：写 `~/.config/autostart/typingpet.desktop`
+- **托盘菜单**：设置 / 显隐 / 置顶 / 点击穿透 / 位置重置 / 尺寸预设 / 状态 / 退出
+- **设置窗口**：一般 · 图库 · 键反应 三页
+- **图库**：导入图片文件夹、切换/重命名/删除图片集
+- **隐私**：只读取按键的 keycode 与按下状态，不读字符、不落盘、不联网
 
-## 동작
+## 构建与运行
 
-- 기본 상태에서는 `pet-idle.png`를 표시합니다.
-- 전역 키 입력이 발생하면 활성 이미지 세트의 반응 이미지 중 직전 이미지와 다른 하나를 무작위로 표시합니다.
-- 특정 키 또는 `⌃⌥⇧⌘` 조합에 전용 이미지를 지정할 수 있습니다. 정확히 일치하는 규칙이 무작위 반응보다 우선합니다.
-- 위치 잠금을 끄면 펫을 직접 드래그해 옮길 수 있습니다. 빠르게 놓으면 속도에 따라 살짝 미끄러진 뒤 부드럽게 멈춥니다.
-- 펫에 마우스를 올리면 살짝 커지고, 잡아 끄는 동안에는 눌리는 듯 작아지는 스프링 효과가 적용됩니다.
-- 설정에서 상시 투명도와 호버 시 투명도를 각각 조절할 수 있습니다. 기본값은 상시 100%, 호버 시 30%이며 커서 진입·이탈 즉시 적용됩니다. 조작 버튼은 선명하게 유지됩니다.
-- `위치 잠금 중 마우스 피하기`를 켜면 클릭 통과 상태의 펫이 가까워지는 커서를 감지해 화면 안에서 부드럽게 자리를 비킵니다.
-- 펫에 마우스를 올리면 `×`와 크기 조절 핸들이 나타납니다. `×`는 펫만 숨기며 메뉴 막대의 `펫 다시 표시`로 복원할 수 있습니다.
-- 우측 상단 핸들을 드래그하면 이미지 비율을 유지하면서 크기가 바뀌며 설정 창의 크기 값과 동기화됩니다.
-- 0.75초 동안 입력이 없으면 idle 이미지로 돌아갑니다.
-- 일반 입력 문자는 읽거나 저장하지 않습니다. 키 반응 규칙에는 선택한 물리 키 코드와 보조 키 조합만 로컬에 저장합니다.
+需要 Rust 1.75+ 与 GTK4 开发包：
 
-## 설정 창
+```bash
+# Fedora
+sudo dnf install -y gtk4-devel gtk4-layer-shell-devel
+# Ubuntu / Debian（gtk4-layer-shell 视发行版可能需要自行编译）
+sudo apt install -y libgtk-4-dev libgtk4-layer-shell-dev
 
-메뉴 막대의 발바닥 아이콘에서 `설정…`을 선택합니다.
-
-- `일반`: 펫 크기, 상시/호버 투명도, 통통 튀는 정도(끔/약하게/보통/강하게), 항상 위, 위치 잠금/마우스 피하기, 로그인 자동 실행, 입력 모니터링 권한 상태
-- `갤러리`: 여러 이미지 세트 추가, 미리보기, 선택/적용, 이름 변경, 목록에서 제거
-- `키 반응`: 이미지와 특정 키 또는 키 조합을 연결하고 삭제
-
-## 이미지 교체
-
-설정 창의 `갤러리` 탭을 사용합니다. 기존 메뉴 막대의 `이미지` 빠른 메뉴도 계속 사용할 수 있습니다.
-
-- `대기 이미지 변경…`: 입력이 없을 때 표시할 이미지 1장을 선택합니다.
-- `반응 이미지 교체…`: 키 입력 때 무작위로 표시할 이미지를 여러 장 선택합니다. 개수 제한은 없습니다.
-- `이미지 폴더 가져오기…`: 이미지 세트를 갤러리에 추가하고 바로 적용합니다.
-- `기본 이미지로 복원`: 앱에 포함된 기본 세트를 다시 활성화합니다. 추가한 갤러리 세트는 유지됩니다.
-
-가져온 세트는 `~/Library/Application Support/TypingPet/Images/Sets`에, 특정 키 반응 이미지는 `~/Library/Application Support/TypingPet/KeyReactions`에 복사되므로 원본을 이동하거나 삭제해도 계속 사용할 수 있습니다.
-
-### 폴더 세트 규칙
-
-- `idle.*` 또는 `pet-idle.*` 파일이 있으면 대기 이미지로 사용합니다.
-- 나머지 지원 이미지는 모두 키 입력용 이미지로 사용합니다.
-- 대기 이미지가 없으면 정렬상 첫 이미지를 대기 이미지로 사용합니다.
-- 반응 이미지가 한 장뿐이어도 사용할 수 있으며, 폴더에 이미지가 한 장만 있으면 대기/반응에 함께 사용합니다.
-- 파일명, 이미지 크기와 가로세로 비율은 자유입니다.
-- PNG, APNG, JPG, JPEG, GIF, TIFF, HEIC, HEIF, WebP를 지원합니다.
-- 서로 다른 비율의 반응 이미지는 대기 이미지 기준 캔버스 안에 비율을 유지해 표시합니다.
-
-## 빌드
-
-요구 사항: Apple Silicon Mac, macOS 13 이상, Swift 6/Xcode Command Line Tools.
-
-```shell
-swift test
-./scripts/build_app.sh
-open dist/TypingPet.app
+git clone https://github.com/MisakaGordon/TypingPetLinux.git
+cd TypingPetLinux
+cargo pet                  # = cargo run --release -p typingpet
 ```
 
-빌드 스크립트는 Keychain에서 `Developer ID Application`, `Apple Development`, 임시 서명 순으로 사용합니다. 특정 인증서를 쓰려면 `CODE_SIGN_IDENTITY` 환경 변수로 지정할 수 있습니다.
+> ⚠️ `cargo run -p typingpet-input` 跑的是**键输入探针**（只打印按键、不开窗口），
+> 宠物窗口在 `typingpet` 包里。仓库已配好别名：`cargo pet`（主程序）/ `cargo probe`（探针）。
 
-공개 배포용 공증에는 Apple Developer Program과 `Developer ID Application` 인증서가 필요합니다. 인증서를 준비한 뒤 `xcrun notarytool store-credentials typingpet-notary`를 한 번 실행하고 다음 스크립트를 사용합니다.
+### 键输入权限（Wayland 没有 macOS `CGEventTap` 的等价物）
 
-```shell
-CODE_SIGN_IDENTITY="Developer ID Application: 이름 (TEAMID)" ./scripts/build_app.sh
-./scripts/notarize_release.sh
+要在 X11 与 Wayland 下都拿到"任意按键"，只能直接读 `/dev/input/event*`。装一条 udev 规则即可
+（只对当前登录用户授予 ACL，登出失效）：
+
+```bash
+sudo install -m644 packaging/60-typingpet-input.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=input
+cargo probe -- 10        # 先确认能读到按键
 ```
 
-처음 실행하면 macOS의 입력 모니터링 권한을 허용해야 합니다. 권한이 허용되면 앱이 자동으로 키 입력 감지를 다시 연결합니다. 메뉴 막대에는 현재 연결 상태와 수동 재시작, `반응 이미지 테스트` 메뉴가 표시됩니다.
+替代方案（安全性更低）：`sudo usermod -aG input "$USER"` 后重新登录。
 
-## 개인정보 보호
+### 常用参数
 
-- 일반 입력 문자를 저장하거나 네트워크로 전송하지 않습니다.
-- 특정 키 반응에는 사용자가 등록한 물리 키 코드와 보조 키 조합만 로컬에 저장합니다.
-- 앱 자체에는 네트워크 통신 기능이 없습니다.
+```
+--headless          不开窗，在终端打印状态机动作（CI/容器验证）
+--mock[=N]          脚本化按键输入源，无需键盘权限
+--settings          启动时打开设置窗口（--settings-tab general|gallery|keys）
+--scale F           本次会话缩放覆盖    --position X,Y   本次会话初始坐标
+--click-through     启动即位置锁定（点击穿透）
+--avoid-pointer     启动即开启躲避光标
+--layer L           layer-shell 层级：top(默认) | overlay | bottom
+--no-layer-shell    强制普通无边框窗口
+--dump-png PATH     把窗口内容渲染成 PNG（自检）
+```
 
-## 라이선스
+> `--click-through` / `--avoid-pointer` / `--scale` 只影响**本次会话**，不会写进配置文件；
+> 只有你在设置窗口或托盘里主动改的值才会落盘。
 
-- 소스 코드: [MIT](LICENSE)
-- 기본 키보드 고양이 자산: [CC0 1.0](ASSET_LICENSE.md)
+## Wayland 兼容性
 
-기본 고양이 이미지는 이 저장소를 위해 AI로 새로 생성한 더미 자산입니다. 사용자가 가져온 이미지의 권리는 각 이미지의 원저작자에게 있습니다.
+Wayland 出于安全设计不提供 macOS 那套全局输入/窗口控制 API，本项目用平台允许的方式逐一补齐：
+
+| 能力 | 做法 |
+|---|---|
+| 全局键盘（任意按键） | evdev 直读 `/dev/input/event*` + udev `uaccess`（X11/Wayland 等效） |
+| 始终置顶 | `gtk4-layer-shell` 的 `Layer::Top` |
+| 窗口定位 | layer-shell `anchor(Top\|Left)` + `margin` |
+| 鼠标点击穿透 | `wl_surface.set_input_region` 设为空集 |
+| 悬停透明度 | 界面事件 + 宠物本体矩形判定 |
+| 躲避光标 | **40px 检测环**：窗口比图片每边大 40px，锁定时把环放进输入区域，靠环内指针事件弹开 |
+| 托盘 / 设置窗口 / 文件选择 | StatusNotifierItem + 普通 xdg-toplevel + xdg-desktop-portal |
+
+**代价**：Wayland 的躲避是"靠近才躲"（40px），且"锁定 + 躲避"期间那一圈会占用鼠标点击 ——
+关闭躲避即恢复完全穿透。设置窗口里对这条有说明。
+
+**平台限制**：GNOME (Mutter) 不支持 `wlr-layer-shell`，GNOME Wayland 下无法置顶/定位，
+程序会提示并退化为普通无边框窗口。X11 与 KDE Wayland 不受影响。
+
+## 与 macOS 版的差异
+
+| 项 | macOS 版（`macos-swift` 分支） | Linux 版（`main`） |
+|---|---|---|
+| 语言/工具 | Swift + AppKit/SwiftUI | Rust + GTK4 |
+| 全局按键 | `CGEventTap` + 输入监控授权 | evdev + udev 规则 |
+| 键码 | macOS 虚拟键码（`40` = K） | evdev 键码（`37` = K），配置不互通 |
+| 缩放 | 右上角手柄拖拽 | 滚轮（无手柄） |
+| 躲避光标 | 全局光标全距离预判 | X11 90px / Wayland 40px |
+| 动图 | `NSImageView.animates` | 未支持（只显示静帧） |
+
+## 代码结构
+
+```
+crates/
+├─ typingpet-core/     纯逻辑：几何/惯性物理/躲避、随机挑图、图库与目录规则、按键模型、配置、状态机
+├─ typingpet-input/    evdev 全局按键（+ mock）、X11 光标查询、typingpet-probe 探针
+└─ typingpet/          GTK4 宠物窗口、设置窗口、托盘、headless 模式
+packaging/             udev 规则、.desktop
+docs/                  移植计划与原型说明（含验证记录）
+```
+
+设计要点：核心逻辑零 GUI 依赖，输入层与配置存储都是可替换的抽象，
+因此全部逻辑都能在无头环境（CI/容器）里测试。`cargo test --workspace` 共 43 项。
+
+## 文档
+
+- [移植计划与平台能力分析](docs/LINUX_PORT_PLAN.md)
+- [原型说明与验证记录](docs/RUST_PROTOTYPE.md)
+
+## 许可证
+
+- 源代码：[MIT](LICENSE)
+- 内置键盘猫素材：[CC0 1.0](ASSET_LICENSE.md)

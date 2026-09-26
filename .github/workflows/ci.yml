@@ -6,11 +6,31 @@ on:
   pull_request:
 
 jobs:
-  test:
-    runs-on: macos-15
+  # 核心逻辑与输入层：不依赖任何 GTK 开发包，任何环境都能跑
+  core:
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - name: Show Swift version
-        run: swift --version
-      - name: Run tests
-        run: swift test
+      - uses: actions/checkout@v4
+      - name: Show Rust version
+        run: cargo --version
+      - name: Test core logic and input layer
+        run: cargo test -p typingpet-core -p typingpet-input
+      - name: Build headless binary
+        run: cargo build -p typingpet --no-default-features
+
+  # GUI 构建需要 GTK4 与 gtk4-layer-shell 的开发包。
+  # 后者在部分发行版/镜像里没有打包，因此这一步标记为"尽力而为"，
+  # 不阻塞上面那个权威的真值来源（核心测试）。
+  gui:
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK4 development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev
+          sudo apt-get install -y libgtk4-layer-shell-dev || \
+            echo "::warning::libgtk4-layer-shell-dev 不可用，跳过 GUI 构建"
+      - name: Build GUI
+        run: cargo build -p typingpet --release
