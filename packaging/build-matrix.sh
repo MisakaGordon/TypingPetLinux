@@ -28,7 +28,14 @@ rocky9|docker.m.daocloud.io/library/rockylinux:9|dnf"}
 # 注意：管道里的 while 会 fork 子 shell，失败信息必须走文件才能带出来
 failed_file=$(mktemp)
 printf '%s\n' "$TARGETS" | while IFS='|' read -r name image family; do
-    [ -n "${name:-}" ] || continue
+    # set -u 下 read 对字段不足的行不会给变量赋值，先统一兜底再判断
+    name=${name:-}; image=${image:-local}; family=${family:-}
+    [ -n "$name" ] || continue
+    if [ "$image" != local ] && [ -z "$family" ]; then
+        echo "!! [$name] 目标格式应为 名字|镜像|包管理器家族" >&2
+        echo "$name" >> "$failed_file"
+        continue
+    fi
     if [ "${image:-local}" = local ]; then
         echo "=================================================================="
         echo "==> [$name] 使用本机工具链"
