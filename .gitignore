@@ -6,3 +6,5 @@ dist/
 target/
 
 .vscode/
+
+docs/
