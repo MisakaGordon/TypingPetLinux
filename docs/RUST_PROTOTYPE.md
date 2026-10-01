@@ -96,6 +96,36 @@ cargo probe -- 10        # 监听 10 秒，打印按键
 
 探针能读到按键 ≠ 主程序在跑：探针只是权限自检，它不会显示宠物。
 
+### 2.4 打包与安装（tarball）
+
+```bash
+sh packaging/build-tarball.sh        # → dist/typingpet-<版本>-<架构>.tar.gz (+ .sha256)
+sh install.sh --check                # 兼容性检查（glibc / GTK4 / layer-shell）
+sh install.sh [--system] [--prefix DIR] [--no-udev] [--uninstall] [--purge]
+```
+
+包内容：`bin/typingpet`、`lib/libgtk4-layer-shell.so.0`、`.desktop`、udev 规则、`install.sh`、`BUILD-INFO.txt`。
+
+设计要点：
+
+- **附带 layer-shell**：`gtk4-layer-shell` 是**硬依赖**（ELF 的 `NEEDED`），很多发行版没有这个包，
+  缺了连启动都不行。二进制加了 `RUNPATH=$ORIGIN/../lib`，安装脚本在系统已有该库时跳过附带那份。
+- **兼容性前置检查**：glibc 版本用 `sort -V` 比较并明确拒绝过旧系统，
+  避免用户看到 `version 'GLIBC_2.39' not found` 这种天书；GTK4 缺失时给出发行版对应的安装命令。
+- **双模式**：系统级（`/usr/local` + 装 udev 规则）/ 用户级（`~/.local`，只打印需要 root 的那一步）
+  —— 原子发行版（Silverblue / Bazzite / SteamOS）里 `/usr/local` 只读，只能走用户级。
+
+实测（容器内）：
+
+| 项 | 结果 |
+|---|---|
+| tarball 构建 | ✅ 6.3MB（含 9.4MB 二进制），附带 layer-shell 56KB |
+| `install.sh --check` | ✅ 正确识别 Fedora / glibc 2.43 / GTK4 / layer-shell |
+| 安装 → 运行 | ✅ 已安装的二进制正常启动，`layer-shell: 已启用` |
+| 附带库解析 | ✅ `ldd` 显示解析到 `<prefix>/bin/../lib/libgtk4-layer-shell.so.0`（RUNPATH 优先于系统路径） |
+| 版本比较 | ✅ 2.43/2.39 放行，2.36/2.35 明确拒绝 |
+| 卸载 | ✅ 程序文件移除，配置与图片集保留（`--purge` 才清） |
+
 ## 3. 键输入权限（Wayland 没有 `CGEventTap` 等价物）
 
 macOS 用 `CGEventTap` 全局监听；Linux 上要在 **X11 与 Wayland 都拿到"任意按键"**，只能用 evdev 直读
@@ -164,7 +194,8 @@ Wayland 出于安全设计不提供 macOS `CGEventTap` 那套能力，本项目�
 ## 5. 已知缺口 / 下一步
 
 1. **已输入字符的读取**：不做，也不打算做（隐私承诺）。
-3. **打包**：Flatpak（`org.gnome.Platform`，键输入需要 `--device=all` 或宿主 udev 规则）或 RPM。
+3. **打包**：tarball + `install.sh` 已完成（见 §2.4）；Flatpak / RPM 仍待做。
+   要覆盖 glibc < 2.39 的老发行版（Debian 12 / Ubuntu 22.04 / RHEL 9），需要在旧基线容器里构建。
 4. **设置窗口细节**：图片集导入进度提示、规则按键冲突提示、界面多语言（当前中文硬编码）。
 
 ## 6. 本容器（无 root / 无 GTK4 头文件）里的构建方式

@@ -55,6 +55,31 @@ cargo probe -- 10        # 先确认能读到按键
 
 替代方案（安全性更低）：`sudo usermod -aG input "$USER"` 后重新登录。
 
+### 打包分发（tarball）
+
+```bash
+sh packaging/build-tarball.sh          # 产物在 dist/，含 sha256
+tar xf dist/typingpet-*.tar.gz && cd typingpet-*/
+sh install.sh --check                  # 先做兼容性检查，不改动系统
+sh install.sh                          # 装到 ~/.local
+sudo sh install.sh --system            # 装到 /usr/local（可顺带装 udev 规则）
+sh install.sh --uninstall              # 卸载
+```
+
+包里附带 `libgtk4-layer-shell.so.0`（56KB）—— 多数发行版没有这个包，缺了程序起不来；
+二进制用 `$ORIGIN/../lib` 找它，系统已有该库时安装脚本会自动跳过附带那份。
+
+**兼容性下限**（`install.sh --check` 会明确检查并给出发行版对应的安装命令）：
+
+| 项 | 要求 | 说明 |
+|---|---|---|
+| glibc | ≥ 2.39 | 覆盖 Fedora 40+ / Ubuntu 24.04+ / Debian 13+ / Arch / openSUSE TW |
+| GTK4 | ≥ 4.12 | 需要运行库（Fedora 装 `gtk4`，Debian/Ubuntu 装 `libgtk-4-1`） |
+
+> Debian 12（glibc 2.36 / GTK 4.8）、Ubuntu 22.04（2.35 / 4.6）、RHEL 9（2.34 / 4.6）
+> 目前**不支持**：glibc 下限来自 zbus 的进程创建路径（已实测，见 `docs/RUST_PROTOTYPE.md`），
+> 要覆盖它们需要在旧基线容器里构建，脚本会给出明确提示而不是链接错误。
+
 ### 常用参数
 
 ```
