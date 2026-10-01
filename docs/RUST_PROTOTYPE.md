@@ -31,6 +31,7 @@ packaging/             udev 规则、.desktop
 | 图库：文件夹导入规则（`idle.*`/`pet-idle.*`） | ✅ 核心逻辑已实现并可单测 |
 | 躲避光标 | ✅ X11：全局光标 + 90px 提前量；**Wayland：40px 检测环局部检测** |
 | 悬停透明度 | ✅ X11 轮询全局光标 / Wayland 用界面事件（检测环内即可判定） |
+| 动图（GIF / 动态 WebP） | ✅ 走 `GtkMediaFile`（GTK 内置图像动画后端，本身是 GdkPaintable） |
 | 惯性滑行/边界反弹 | ✅ 核心逻辑已实现并单测 |
 
 ## 2. 构建与运行
@@ -132,6 +133,21 @@ Wayland 出于安全设计不提供 macOS `CGEventTap` 那套能力，本项目�
 **已知平台限制**：GNOME (Mutter) 不支持 `wlr-layer-shell`，因此 GNOME Wayland 下无法置顶/定位，
 程序会打印提示并退化为普通无边框窗口；X11 与 KDE Wayland 不受影响。
 
+### 动图是怎么实现的
+
+- **判定**：`GdkPixbufAnimation::from_file` + `is_static_image()`，只对动图走特殊路径。
+- **播放**：`GtkMediaFile::for_filename` + `set_loop(true)` + `play()`，直接当作 `GtkPicture`
+  的 paintable —— `GtkMediaFile` 本身实现 `GdkPaintable`，GTK 自己按帧时钟推进，
+  **不需要手写逐帧定时器，也不依赖 GStreamer**（GTK 有内置图像后端）。
+- **静图**：仍走预缩放 pixbuf（快，且保证窗口尺寸 == 设定尺寸）。
+- **缩放变化**：动图只改尺寸请求、不重新加载（否则滚轮每格都会重启动画）。
+- **回退**：动图播放出错（缺 loader）时经 `notify::error` 回退成静态首帧，宠物不会整个消失。
+- **依赖**：动图能力来自 gdk-pixbuf 的 loader（Fedora 44 用 glycin 后端；其他发行版上
+  动态 WebP 可能需要 `libwebp-pixbuf-loader`）。缺 loader 时自动退化为静帧，不会报错。
+
+实测：待机图换成 3 帧 GIF 后连拍 4 张，宠物区域签名与平均色在变（0.853↔0.822 交替）；
+换成静态 PNG 的对照组 3 张签名完全一致。
+
 ## 4. 与 macOS 版的差异
 
 | 项 | macOS 版 | 本原型 |
@@ -142,13 +158,12 @@ Wayland 出于安全设计不提供 macOS `CGEventTap` 那套能力，本项目�
 | 设置 | 三标签页 SwiftUI 窗口 | 三标签页 GTK4 窗口（信息架构一致，控件更朴素） |
 | 菜单 | 状态栏菜单 20+ 项 | 托盘菜单 12 项（设置/显隐/置顶/穿透/重置/大小/状态/退出） |
 | 躲避光标 | 全局光标，全距离预判 | X11：等价实现（90px）；Wayland：40px 检测环局部检测（协议限制） |
-| 动图（GIF/WebP） | `NSImageView.animates` | 未接（当前只显示静帧） |
+| 动图 | `NSImageView.animates` | ✅ 支持（GIF / 动态 WebP） |
 | 登录自启 | `SMAppService` | 未接（`~/.config/autostart/*.desktop`） |
 
 ## 5. 已知缺口 / 下一步
 
-1. **动图（GIF/WebP）**：`GdkPixbufAnimation` + tick 回调逐帧推进，目前只显示静帧。
-2. **已输入字符的读取**：不做，也不打算做（隐私承诺）。
+1. **已输入字符的读取**：不做，也不打算做（隐私承诺）。
 3. **打包**：Flatpak（`org.gnome.Platform`，键输入需要 `--device=all` 或宿主 udev 规则）或 RPM。
 4. **设置窗口细节**：图片集导入进度提示、规则按键冲突提示、界面多语言（当前中文硬编码）。
 

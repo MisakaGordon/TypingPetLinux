@@ -172,6 +172,7 @@ pub struct PetUi {
     quit: Arc<AtomicBool>,
     tray_synced_at: RefCell<Option<Instant>>,
     avoid_debug_at: RefCell<Option<Instant>>,
+    animation: RefCell<AnimationPlayer>,
 }
 
 pub fn run(options: Options) -> Result<()> {
@@ -307,9 +308,7 @@ impl PetUi {
         if layer_shell {
             apply_position(&window, position.x, position.y);
         }
-        if let Some(path) = &idle_url {
-            render_picture(&picture, path, image_size);
-        }
+        // 首帧在 `ui` 建好之后用 PetUi::show_image 显示（动图需要拿到播放器）
 
         let click_through = settings.position_locked;
         let state = Rc::new(RefCell::new(UiState {
@@ -341,6 +340,7 @@ impl PetUi {
             quit: quit.clone(),
             tray_synced_at: RefCell::new(None),
             avoid_debug_at: RefCell::new(None),
+            animation: RefCell::new(AnimationPlayer::default()),
         });
 
         apply_input_region(&ui);
@@ -366,6 +366,9 @@ impl PetUi {
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "<none>".to_string())
         );
+        if let Some(path) = &idle_url {
+            ui.show_image(path);
+        }
         println!("提示：滚轮=缩放，拖拽=移动，托盘/设置窗口=全部功能");
         if !layer_shell {
             println!(
@@ -376,6 +379,14 @@ impl PetUi {
         window.present();
         ui.sync_tray_state(true);
         ui
+    }
+
+    /// 显示一张图（待机图/反应图），自动处理动图。
+    fn show_image(&self, path: &Path) {
+        let size = self.state.borrow().image_size();
+        self.animation
+            .borrow_mut()
+            .show(&self.picture, path, size);
     }
 
     // ---------- 对外状态 ----------
@@ -466,7 +477,9 @@ impl PetUi {
         self.fixed.set_size_request(window_size.w as i32, window_size.h as i32);
         let current = self.state.borrow().current.clone();
         if let Some(path) = current {
-            render_picture(&self.picture, &path, image_size);
+            self.animation
+                .borrow_mut()
+                .resize(&self.picture, &path, image_size);
         }
         apply_input_region(self);
     }
@@ -583,17 +596,17 @@ impl PetUi {
                 .state
                 .update_sources(idle.clone(), reactions, shake);
         }
-        let (window_size, image_size) = {
+        let window_size = {
             let mut state = self.state.borrow_mut();
             state.base_size = base_size;
             state.current = idle.clone();
             state.bounce = None;
-            (state.window_size(), state.image_size())
+            state.window_size()
         };
         self.window.set_default_size(window_size.w as i32, window_size.h as i32);
         self.fixed.set_size_request(window_size.w as i32, window_size.h as i32);
         if let Some(path) = &idle {
-            render_picture(&self.picture, path, image_size);
+            self.show_image(path);
         }
         apply_input_region(self);
         self.sync_tray_state(true);
@@ -1177,8 +1190,7 @@ impl PetUi {
         for action in actions {
             match action {
                 Action::ShowImage(path) => {
-                    let size = self.state.borrow().image_size();
-                    render_picture(&self.picture, &path, size);
+                    self.show_image(&path);
                     self.state.borrow_mut().current = Some(path);
                 }
                 Action::Bounce(amplitude) => {
@@ -1208,9 +1220,24 @@ pub fn install_css() {
     }
 }
 
-pub fn render_picture(picture: &gtk::Picture, path: &Path, size: Size) {
-    let width = size.w.round().max(1.0) as i32;
-    let height = size.h.round().max(1.0) as i32;
+/// 目标显示尺寸（像素）。
+fn target_pixels(size: Size) -> (i32, i32) {
+    (size.w.round().max(1.0) as i32, size.h.round().max(1.0) as i32)
+}
+
+/// 是不是需要逐帧播放的动图（GIF / 动态 WebP / APNG：取决于系统装的 gdk-pixbuf loader）。
+fn is_animated(path: &Path) -> bool {
+    use gtk::gdk_pixbuf::prelude::*;
+    gtk::gdk_pixbuf::PixbufAnimation::from_file(path)
+        .map(|animation| !animation.is_static_image())
+        .unwrap_or(false)
+}
+
+/// 静图路径：按目标尺寸预缩放再转 texture。
+///
+/// 预缩放既是性能考虑，也保证窗口尺寸 == 设定尺寸（不会被图片原始尺寸撑大）。
+fn render_static(picture: &gtk::Picture, path: &Path, size: Size) {
+    let (width, height) = target_pixels(size);
     // 关键：can_shrink=true 时 GtkPicture 的自然尺寸为 0，而 GtkFixed 按自然尺寸分配子控件，
     // 不给显式尺寸请求的话图片会被分配成 0x0（窗口在、但什么都不画）。
     picture.set_size_request(width, height);
@@ -1220,6 +1247,63 @@ pub fn render_picture(picture: &gtk::Picture, path: &Path, size: Size) {
             picture.set_paintable(Some(&texture));
         }
         Err(error) => eprintln!("image load failed ({}): {error}", path.display()),
+    }
+}
+
+/// 图片显示：自动区分动图与静图。
+///
+/// - **动图**：交给 `GtkMediaFile` —— 它就是 GTK 内置的图像动画后端（不需要 GStreamer），
+///   本身实现了 `GdkPaintable`，GTK 按帧时钟自己推进，我们不必手写逐帧定时器。
+/// - **静图**：仍走预缩放 pixbuf。
+///
+/// 动图播放失败（缺 loader 等）时通过 `notify::error` 回退成静图，避免宠物整个消失。
+#[derive(Default)]
+struct AnimationPlayer {
+    current: Option<gtk::MediaFile>,
+}
+
+impl AnimationPlayer {
+    fn show(&mut self, picture: &gtk::Picture, path: &Path, size: Size) {
+        self.stop();
+        let (width, height) = target_pixels(size);
+        picture.set_size_request(width, height);
+
+        if !is_animated(path) {
+            render_static(picture, path, size);
+            return;
+        }
+
+        let media = gtk::MediaFile::for_filename(path);
+        media.set_loop(true);
+        media.play();
+        {
+            let picture = picture.clone();
+            let media_ref = media.clone();
+            let path = path.to_path_buf();
+            media.connect_error_notify(move |_| {
+                if let Some(error) = media_ref.error() {
+                    eprintln!("动图播放失败（{}）：{error}；回退为静态首帧", path.display());
+                    render_static(&picture, &path, size);
+                }
+            });
+        }
+        picture.set_paintable(Some(&media));
+        self.current = Some(media);
+    }
+
+    /// 尺寸变化：动图不用重新加载（GtkPicture 以 Contain 方式缩放），静图需要按新尺寸重缩放。
+    fn resize(&mut self, picture: &gtk::Picture, path: &Path, size: Size) {
+        let (width, height) = target_pixels(size);
+        picture.set_size_request(width, height);
+        if self.current.is_none() {
+            render_static(picture, path, size);
+        }
+    }
+
+    fn stop(&mut self) {
+        if let Some(media) = self.current.take() {
+            media.pause();
+        }
     }
 }
 
@@ -1538,6 +1622,19 @@ mod tests {
             avoid_settled: true,
             wayland_note_printed: false,
         }
+    }
+
+    fn asset(name: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/assets")
+            .join(name)
+    }
+
+    #[test]
+    fn distinguishes_animated_from_static_images() {
+        assert!(is_animated(&asset("animated.gif")), "GIF 动图应被识别为动图");
+        assert!(!is_animated(&asset("static.png")), "PNG 应被识别为静图");
+        assert!(!is_animated(Path::new("/nonexistent/missing.gif")));
     }
 
     #[test]
