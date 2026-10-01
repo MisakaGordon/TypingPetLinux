@@ -7,8 +7,6 @@
 
 按键时宠物会换成随机的反应图并弹一下，0.75 秒没输入就回到待机图；可以给特定键或组合键指定专属图片。
 
-![待机图](crates/typingpet/resources/pet-idle.png)
-
 ## 功能
 
 - **任意按键触发**：随机换反应图（不会连续重复同一张）+ 按强度分级的弹跳动画
@@ -117,17 +115,6 @@ Wayland 出于安全设计不提供 macOS 那套全局输入/窗口控制 API，
 **平台限制**：GNOME (Mutter) 不支持 `wlr-layer-shell`，GNOME Wayland 下无法置顶/定位，
 程序会提示并退化为普通无边框窗口。X11 与 KDE Wayland 不受影响。
 
-## 与 macOS 版的差异
-
-| 项 | macOS 版（`macos-swift` 分支） | Linux 版（`main`） |
-|---|---|---|
-| 语言/工具 | Swift + AppKit/SwiftUI | Rust + GTK4 |
-| 全局按键 | `CGEventTap` + 输入监控授权 | evdev + udev 规则 |
-| 键码 | macOS 虚拟键码（`40` = K） | evdev 键码（`37` = K），配置不互通 |
-| 缩放 | 右上角手柄拖拽 | 滚轮（无手柄） |
-| 躲避光标 | 全局光标全距离预判 | X11 90px / Wayland 40px |
-| 动图 | `NSImageView.animates` | ✅ 支持（GIF / 动态 WebP） |
-
 ## 代码结构
 
 ```
@@ -136,16 +123,10 @@ crates/
 ├─ typingpet-input/    evdev 全局按键（+ mock）、X11 光标查询、typingpet-probe 探针
 └─ typingpet/          GTK4 宠物窗口、设置窗口、托盘、headless 模式
 packaging/             udev 规则、.desktop
-docs/                  移植计划与原型说明（含验证记录）
 ```
 
 设计要点：核心逻辑零 GUI 依赖，输入层与配置存储都是可替换的抽象，
 因此全部逻辑都能在无头环境（CI/容器）里测试。`cargo test --workspace` 共 43 项。
-
-## 文档
-
-- [移植计划与平台能力分析](docs/LINUX_PORT_PLAN.md)
-- [原型说明与验证记录](docs/RUST_PROTOTYPE.md)
 
 ## 许可证
 
