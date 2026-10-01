@@ -12,12 +12,36 @@ echo "==> [$FAMILY] 安装构建依赖"
 case "$FAMILY" in
     apt)
         export DEBIAN_FRONTEND=noninteractive
+        # 部分地区直连官方源很慢；可用 APT_MIRROR 指定镜像，例如：
+        #   APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
+        if [ -n "${APT_MIRROR:-}" ]; then
+            . /etc/os-release
+            codename=${VERSION_CODENAME:?无法确定发行版代号}
+            case "${ID:-}" in
+                ubuntu) components="main universe" ;;
+                *)      components="main" ;;
+            esac
+            {
+                echo "deb $APT_MIRROR $codename $components"
+                echo "deb $APT_MIRROR $codename-updates $components"
+                echo "deb $APT_MIRROR $codename-security $components"
+            } > /etc/apt/sources.list
+            echo "    已切换到镜像源: $APT_MIRROR ($codename)"
+        fi
         apt-get update -qq
         apt-get install -y -qq --no-install-recommends \
             curl git ca-certificates build-essential pkg-config binutils \
             meson ninja-build libgtk-4-dev libwayland-dev wayland-protocols
         ;;
     dnf)
+        # 同样支持换源（Fedora 官方源在某些网络下很慢）：
+        #   DNF_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/fedora
+        if [ -n "${DNF_MIRROR:-}" ] && [ -d /etc/yum.repos.d ]; then
+            sed -i -e 's|^metalink=|#metalink=|' \
+                   -e "s|^#baseurl=http://download.example/pub/fedora/linux|baseurl=$DNF_MIRROR|" \
+                   /etc/yum.repos.d/*.repo 2>/dev/null || true
+            echo "    已切换到镜像源: $DNF_MIRROR"
+        fi
         dnf install -y -q curl git ca-certificates gcc gcc-c++ make pkgconf-pkg-config \
             binutils meson ninja-build gtk4-devel wayland-devel wayland-protocols-devel
         ;;

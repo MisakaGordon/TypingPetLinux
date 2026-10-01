@@ -45,6 +45,8 @@ printf '%s\n' "$TARGETS" | while IFS='|' read -r name image family; do
         -w /src \
         -e CARGO_TARGET_DIR=/tmp/target \
         -e TARGET_SUFFIX="$name" \
+        -e APT_MIRROR="${APT_MIRROR:-}" \
+        -e DNF_MIRROR="${DNF_MIRROR:-}" \
         "$image" \
         sh packaging/container-build.sh "$family"
     then
