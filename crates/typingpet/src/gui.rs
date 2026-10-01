@@ -51,6 +51,20 @@ pub fn layer_shell_supported() -> bool {
     wayland_display() && gtk4_layer_shell::is_supported()
 }
 
+/// 取当前窗口的 X11 window id（仅 X11 后端下有值）。
+pub fn x11_window_id(window: &gtk::Window) -> Option<u32> {
+    let surface = window.surface()?;
+    let x11 = surface.downcast::<gdk4_x11::X11Surface>().ok()?;
+    // GDK 的 XID 是 gulong（64 位），但 X11 协议里窗口 id 就是 32 位
+    Some(x11.xid() as u32)
+}
+
+/// 逻辑像素 → X11 root 物理像素（与 `physical_to_logical` 互为逆运算）。
+pub fn logical_to_physical(point: Point, scale: f64) -> Point {
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    Point::new(point.x * scale, point.y * scale)
+}
+
 pub fn load_thumbnail(path: Option<&Path>, size: i32) -> Option<gtk::gdk_pixbuf::Pixbuf> {
     let path = path?;
     gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(path, size, size, true).ok()
@@ -77,6 +91,8 @@ struct UiState {
     avoid_last: Option<Instant>,
     avoid_settled: bool,
     wayland_note_printed: bool,
+    /// X11 下窗口刚映射时会被窗口管理器摆到别处，前若干帧反复重申目标位置。
+    x11_settle_frames: u8,
 }
 
 impl UiState {
@@ -326,6 +342,7 @@ impl PetUi {
             avoid_last: None,
             avoid_settled: true,
             wayland_note_printed: false,
+            x11_settle_frames: if wayland_display() { 0 } else { 30 },
         }));
 
         let ui = Rc::new(Self {
@@ -376,7 +393,67 @@ impl PetUi {
                 typingpet_input::session_kind()
             );
         }
+        if !wayland_display() && typingpet_input::session_kind() == "wayland" {
+            println!(
+                "警告：这是 Wayland 会话 + X11 后端（XWayland）。该组合下不能置顶，\
+                 且 KWin 默认不把光标位置告诉 X11 客户端，躲避会失效；\
+                 建议去掉 GDK_BACKEND=x11，改用原生 Wayland 后端。"
+            );
+        }
         window.present();
+
+        // 恢复自检：启动 1 秒后打印窗口状态（含 X11 下的真实位置），
+        // 以及 --dump-png 的离屏渲染。这两项在早先的一次重写里被误删过。
+        {
+            let window = window.clone();
+            let picture = picture.clone();
+            let dump_path = runtime.borrow().options.dump_png.clone();
+            gtk::glib::timeout_add_seconds_local(1, move || {
+                let surface_info = match window.surface() {
+                    Some(surface) => format!(
+                        "{}x{} mapped={} scale={:.2}",
+                        surface.width(),
+                        surface.height(),
+                        surface.is_mapped(),
+                        surface.scale()
+                    ),
+                    None => "<none>".to_string(),
+                };
+                let (mx, my) = if layer_shell_supported() {
+                    (
+                        window.margin(gtk4_layer_shell::Edge::Left),
+                        window.margin(gtk4_layer_shell::Edge::Top),
+                    )
+                } else {
+                    (0, 0)
+                };
+                eprintln!(
+                    "diag: widget={}x{} mapped={} visible={} surface=[{surface_info}] margin=({mx},{my}) paintable={} opacity={:.2}",
+                    window.width(),
+                    window.height(),
+                    window.is_mapped(),
+                    window.is_visible(),
+                    picture.paintable().is_some(),
+                    window.opacity(),
+                );
+                if let Some(window_id) = x11_window_id(&window) {
+                    if let Some((gx, gy, gw, gh)) =
+                        typingpet_input::x11::window_geometry(window_id)
+                    {
+                        eprintln!(
+                            "diag(x11): id=0x{window_id:x} 实际位置=({gx},{gy}) 尺寸={gw}x{gh}"
+                        );
+                    }
+                }
+                if let Some(path) = &dump_path {
+                    match render_to_png(&window, &fixed, path) {
+                        Ok(()) => eprintln!("dump: 已写出 {}", path.display()),
+                        Err(error) => eprintln!("dump: 失败 {error}"),
+                    }
+                }
+                gtk::glib::ControlFlow::Break
+            });
+        }
         ui.sync_tray_state(true);
         ui
     }
@@ -1064,6 +1141,20 @@ impl PetUi {
 
             ui.drain_tray_commands();
 
+            // X11：窗口映射后窗口管理器可能覆盖我们的位置，前 ~0.5s 反复重申
+            let settle = {
+                let mut state = ui.state.borrow_mut();
+                if state.x11_settle_frames > 0 {
+                    state.x11_settle_frames -= 1;
+                    Some(state.position)
+                } else {
+                    None
+                }
+            };
+            if let Some(position) = settle {
+                apply_position(&ui.window, position.x, position.y);
+            }
+
             // 1) 输入 → 状态机（捕获窗口优先消费）
             let events: Vec<typingpet_input::KeyEvent> = {
                 let runtime = ui.runtime.borrow();
@@ -1220,6 +1311,29 @@ pub fn install_css() {
     }
 }
 
+/// 把窗口内容直接渲染为 PNG（绕过合成器，用于自检渲染管线）。
+fn render_to_png(window: &gtk::Window, widget: &gtk::Fixed, path: &Path) -> Result<()> {
+    let paintable = gtk::WidgetPaintable::new(Some(widget));
+    let snapshot = gtk::Snapshot::new();
+    let width = f64::from(widget.width().max(1));
+    let height = f64::from(widget.height().max(1));
+    paintable.snapshot(&snapshot, width, height);
+    let node = snapshot
+        .to_node()
+        .ok_or_else(|| anyhow::anyhow!("empty render node"))?;
+    let native = window
+        .native()
+        .ok_or_else(|| anyhow::anyhow!("window is not realized"))?;
+    let renderer = native
+        .renderer()
+        .ok_or_else(|| anyhow::anyhow!("no renderer"))?;
+    let texture = renderer.render_texture(&node, None);
+    texture
+        .save_to_png(path)
+        .map_err(|error| anyhow::anyhow!(error))?;
+    Ok(())
+}
+
 /// 目标显示尺寸（像素）。
 fn target_pixels(size: Size) -> (i32, i32) {
     (size.w.round().max(1.0) as i32, size.h.round().max(1.0) as i32)
@@ -1344,11 +1458,25 @@ fn setup_layer_shell(
 }
 
 fn apply_position(window: &gtk::Window, x: f64, y: f64) {
-    if !layer_shell_supported() {
+    if layer_shell_supported() {
+        window.set_margin(gtk4_layer_shell::Edge::Left, x.max(0.0) as i32);
+        window.set_margin(gtk4_layer_shell::Edge::Top, y.max(0.0) as i32);
         return;
     }
-    window.set_margin(gtk4_layer_shell::Edge::Left, x.max(0.0) as i32);
-    window.set_margin(gtk4_layer_shell::Edge::Top, y.max(0.0) as i32);
+
+    // X11：GTK4 没有任何窗口定位 API，只能拿到窗口 id 后直接发 ConfigureWindow。
+    // state.position 是 GDK 逻辑像素，X11 root 是物理像素，所以要乘回 scale。
+    let Some(window_id) = x11_window_id(window) else {
+        return;
+    };
+    let physical = logical_to_physical(Point::new(x, y), primary_monitor_geometry().scale);
+    if !typingpet_input::x11::move_window(
+        window_id,
+        physical.x.round() as i32,
+        physical.y.round() as i32,
+    ) {
+        eprintln!("X11: 移动窗口失败（id=0x{window_id:x}）");
+    }
 }
 
 fn apply_opacity(window: &gtk::Window, settings: &Settings, hovering: bool) {
@@ -1621,6 +1749,7 @@ mod tests {
             avoid_last: None,
             avoid_settled: true,
             wayland_note_printed: false,
+            x11_settle_frames: 0,
         }
     }
 
@@ -1675,6 +1804,19 @@ mod tests {
     }
 
     #[test]
+    fn logical_and_physical_conversions_are_inverse() {
+        // X11 移动窗口要把逻辑坐标乘回 scale，与读取光标时的除法必须互逆，
+        // 否则窗口位置与宠物框会漂移（正是悬停闪烁那个 bug 的成因）。
+        let point = Point::new(1234.5, 678.9);
+        for scale in [1.0, 1.35, 2.0] {
+            let round_trip = physical_to_logical(logical_to_physical(point, scale), scale);
+            assert!((round_trip.x - point.x).abs() < 0.001, "scale {scale}");
+            assert!((round_trip.y - point.y).abs() < 0.001, "scale {scale}");
+        }
+        assert_eq!(logical_to_physical(point, 0.0), point);
+    }
+
+    #[test]
     fn physical_pointer_coordinates_are_converted_to_logical_space() {
         // 本机实测：GDK 显示器 1600x1067（逻辑）vs X11 root 2160x1440（物理），倍率 1.35。
         // 悬停判定必须用同一空间，否则物理坐标会被拿去和逻辑宠物框比较。
@@ -1718,6 +1860,7 @@ mod tests {
             avoid_last: None,
             avoid_settled: true,
             wayland_note_printed: false,
+            x11_settle_frames: 0,
         };
         let frame = state.pet_frame();
         assert_eq!(frame.x, 140.0);

@@ -163,6 +163,20 @@ Wayland 出于安全设计不提供 macOS `CGEventTap` 那套能力，本项目�
 **已知平台限制**：GNOME (Mutter) 不支持 `wlr-layer-shell`，因此 GNOME Wayland 下无法置顶/定位，
 程序会打印提示并退化为普通无边框窗口；X11 与 KDE Wayland 不受影响。
 
+### X11 支持
+
+| 能力 | X11 下的做法 |
+|---|---|
+| 窗口定位 / 拖动 / 躲避推动窗口 | GTK4 **没有**任何窗口定位 API，只能 `gdk4-x11` 取窗口 id + `x11rb` 发 `ConfigureWindow`；layer-shell 的 `set_margin` 只在 Wayland 有效 |
+| 坐标换算 | `state.position` 是 GDK 逻辑像素，X11 root 是物理像素 → 移动窗口时乘回 scale（与读光标时的除法互逆，有单测钉住） |
+| 映射后的位置 | 窗口刚映射时窗口管理器会自行摆放，前 ~0.5s 反复重申目标位置 |
+| 点击穿透 | `gdk_surface_set_input_region` 在 X11 下映射为 input shape，同样有效 |
+| 全局光标 | `XQueryPointer`（连接复用，不再每次重连） |
+
+**注意**：在 **Wayland 会话 + X11 后端（XWayland）** 这个组合下，即使定位能用，
+也存在两个平台限制：没有 layer-shell（不能置顶），且 KWin 默认不向 X11 客户端提供光标位置
+（`XwaylandEavesdropsMouse=false`），导致躲避失效。程序启动时会打印警告建议改用原生 Wayland 后端。
+
 ### 动图是怎么实现的
 
 - **判定**：`GdkPixbufAnimation::from_file` + `is_static_image()`，只对动图走特殊路径。
@@ -228,6 +242,9 @@ cargo build -p typingpet
 | 真实桌面可见 | 运行时 `spectacle` 截屏 | ✅ 宠物浮在普通窗口之上（layer-shell Top 生效） |
 | evdev 真机按键 | `cargo probe -- 10` | ✅ 用户宿主实测可读到按键 |
 | 默认参数启动可见性 | `./target/release/typingpet`（不带参数） | ✅ 右下角可见，浮于窗口之上 |
+| X11 定位 | `GDK_BACKEND=x11` + 配置 `pet_x/pet_y=400/300` | ✅ `diag(x11)` 实际位置 =(400,300) |
+| X11 躲避推动窗口 | X11 + `--avoid-pointer --simulate-pointer 420,500` | ✅ 窗口被真实移动到 (497,317) |
+| X11 指针解耦（限制） | `--warp X,Y` 两次不同坐标 | ⚠️ 位置不变（KWin 忽略 XWayland 的 warp），已加启动警告 |
 | 设置窗口 · 一般页 | `typingpet --settings` | ✅ 滑杆/开关/下拉/状态行渲染正确 |
 | 设置窗口 · 图库页 | `--settings-tab gallery`（预置 2 个图片集） | ✅ 缩略图、反应张数、内置标记 |
 | 设置窗口 · 键反应页 | `--settings-tab keys`（预置 Ctrl+K / Space） | ✅ 键名显示正确（evdev 37 + Ctrl → `Ctrl+K`） |
