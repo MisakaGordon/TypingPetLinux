@@ -10,7 +10,7 @@ typingpet-core = { path = "../typingpet-core" }
 typingpet-input = { path = "../typingpet-input" }
 anyhow = { workspace = true }
 # v4_12 提供 Picture::set_content_fit / CssProvider::load_from_string（Fedora 44 的 GTK 为 4.22）
-gtk4 = { version = "0.11", optional = true, features = ["v4_6"] }
+gtk4 = { version = "0.11", optional = true, features = ["v4_12"] }
 gtk4-layer-shell = { version = "0.8", optional = true }
 # X11 后端下需要它来拿窗口 ID（GTK4 没有窗口定位 API，只能用 X11 请求移动窗口）
 gdk4-x11 = { version = "0.11", optional = true }

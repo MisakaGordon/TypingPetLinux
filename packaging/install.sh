@@ -212,5 +212,5 @@ esac
 echo "== 完成 =="
 echo "   启动:      $BIN_DIR/typingpet        （右键宠物或再启动一次可打开设置）"
 echo "   自检:      $BIN_DIR/typingpet --headless --mock=3"
-echo "   键输入自检: $BIN_DIR/typingpet --check-input   （设备、权限与修复步骤一次看清）"
+echo "   按键自检:  $BIN_DIR/typingpet --help 后看 --print-events"
 echo "   卸载:      sh $SRC/install.sh --uninstall"
