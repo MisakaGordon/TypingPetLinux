@@ -1,4 +1,4 @@
-[English](README.md)
+[English](README_en.md)
 # TypingPet for Linux
 
 按键时会有反应的桌面宠物 —— **Rust + GTK4** 实现的 Linux 原生版本，在 KDE Plasma 6 / Wayland 上开发与验证。
