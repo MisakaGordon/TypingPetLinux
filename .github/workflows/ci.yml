@@ -1,9 +1,13 @@
 name: CI
 
+# 已按要求关闭自动触发：push / PR 都不再自动构建。
+# 需要时在网页上手动跑一次：Actions → CI → Run workflow。
+# 想恢复自动触发，把下面注释掉的触发条件放回去即可。
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  # pull_request:
 
 jobs:
   # 核心逻辑与输入层：不依赖任何 GTK 开发包，任何环境都能跑
