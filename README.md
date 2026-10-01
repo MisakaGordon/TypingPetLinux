@@ -1,8 +1,9 @@
+[English](README.md)
 # TypingPet for Linux
 
 按键时会有反应的桌面宠物 —— **Rust + GTK4** 实现的 Linux 原生版本，在 KDE Plasma 6 / Wayland 上开发与验证。
 
-> 本项目源自 macOS 版 [TypingPet](../../)（作者 MisakaGordon，Swift + AppKit/SwiftUI 实现）。
+> 本项目源自 macOS 版 [TypingPet](https://github.com/ynifamily3/TypingPetMac)（作者 MisakaGordon，Swift + AppKit/SwiftUI 实现）。
 > **原作者的 macOS 版完整保留在 `macos-swift` 分支**，本分支（`main`）只包含 Linux 版。
 
 按键时宠物会换成随机的反应图并弹一下，0.75 秒没输入就回到待机图；可以给特定键或组合键指定专属图片。
