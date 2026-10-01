@@ -73,12 +73,24 @@ sh install.sh --uninstall              # 卸载
 
 | 项 | 要求 | 说明 |
 |---|---|---|
-| glibc | ≥ 2.39 | 覆盖 Fedora 40+ / Ubuntu 24.04+ / Debian 13+ / Arch / openSUSE TW |
-| GTK4 | ≥ 4.12 | 需要运行库（Fedora 装 `gtk4`，Debian/Ubuntu 装 `libgtk-4-1`） |
+| GTK4 | ≥ 4.6 | 运行库即可（Fedora 装 `gtk4`，Debian/Ubuntu 装 `libgtk-4-1`） |
+| glibc | **取决于构建基线** | glibc 是构建期绑定的：在哪个发行版里编译，就在哪里设下限 |
 
-> Debian 12（glibc 2.36 / GTK 4.8）、Ubuntu 22.04（2.35 / 4.6）、RHEL 9（2.34 / 4.6）
-> 目前**不支持**：glibc 下限来自 zbus 的进程创建路径（已实测，见 `docs/RUST_PROTOTYPE.md`），
-> 要覆盖它们需要在旧基线容器里构建，脚本会给出明确提示而不是链接错误。
+glibc 由**构建基线**决定，所以按发行版分别产出（manylinux 思路：越旧的基线覆盖越广）：
+
+```bash
+sh packaging/build-matrix.sh                      # 默认跑 native + fedora42 + debian12 + ubuntu2204 + rocky9
+TARGETS="debian12|debian:12|apt" sh packaging/build-matrix.sh   # 只跑一个目标
+```
+
+产物名形如 `typingpet-0.1.0-x86_64-debian12.tar.gz`（后缀就是构建基线），
+每个包里的 `BUILD-INFO.txt` 写明它的 glibc / GTK 下限。
+
+打 tag 时 GitHub Actions 会自动做同样的事并把所有产物挂到 Release：见
+[`.github/workflows/release.yml`](.github/workflows/release.yml)。
+
+> 注：若目标镜像不在可达的 registry 上（部分地区直连 docker.io 不通），
+> 脚本默认用 `docker.m.daocloud.io` 作为镜像源；可用 `TARGETS` 覆盖成你自己的镜像。
 
 ### 常用参数
 

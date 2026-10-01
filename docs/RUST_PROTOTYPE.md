@@ -126,6 +126,36 @@ sh install.sh [--system] [--prefix DIR] [--no-udev] [--uninstall] [--purge]
 | 版本比较 | ✅ 2.43/2.39 放行，2.36/2.35 明确拒绝 |
 | 卸载 | ✅ 程序文件移除，配置与图片集保留（`--purge` 才清） |
 
+### 2.5 多发行版构建（GitHub Release 分发）
+
+glibc 与 GTK 的版本是**构建期**绑定的：在旧基线里编译出的二进制能在更新的系统上跑（反之不行）。
+所以要覆盖多发行版，就要**按基线分别构建**，而不是一个二进制通吃。
+
+为此把代码的 GTK 依赖从 4.12 降到了 **4.6**（否则旧基线根本编译不过 —— gtk4-rs 的 feature
+在构建期就要求头文件版本）：
+
+| 原 API | 版本 | 换成 | 版本 |
+|---|---|---|---|
+| `CssProvider::load_from_string` | 4.12 | `load_from_data` | 4.0 |
+| `FileDialog`（选图/选文件夹） | 4.10 | `FileChooserNative`（同样走 portal） | 4.0 |
+| `AlertDialog`（确认/报错） | 4.10 | `MessageDialog` | 4.0 |
+| `Picture::set_content_fit` | 4.8 | 直接删掉（GtkPicture 默认就是 CONTAIN） | — |
+| `Surface::scale`（分数缩放） | 4.12 | `scale_factor`（整数） | 4.0 |
+
+最终二进制的 GTK 版本化符号里**不再出现** 4.8/4.10/4.12 的 API（用 `readelf --dyn-syms` 逐一核对）。
+
+流水线：
+
+```bash
+sh packaging/build-matrix.sh          # 本地 podman/docker，多基线各出一份产物
+```
+
+- `packaging/container-build.sh`：在目标发行版容器内装依赖 → 装 Rust → **缺 gtk4-layer-shell 就从源码构建**
+  → 调 `build-tarball.sh` 打包 → headless 自检 + `ldd` 检查未解析库。
+- `packaging/build-matrix.sh`：宿主侧编排，镜像源可换（docker.io 不通时默认走 `docker.m.daocloud.io`）；
+  挂载用 `:Z` 以适配 SELinux Enforcing 的宿主。
+- `.github/workflows/release.yml`：打 tag 时用 `container:` 在 5 个基线里并行构建并发布 Release。
+
 ## 3. 键输入权限（Wayland 没有 `CGEventTap` 等价物）
 
 macOS 用 `CGEventTap` 全局监听；Linux 上要在 **X11 与 Wayland 都拿到"任意按键"**，只能用 evdev 直读

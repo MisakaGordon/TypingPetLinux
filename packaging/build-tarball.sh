@@ -14,7 +14,7 @@ cd "$project_dir"
 
 VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*= *"\(.*\)"/\1/')
 ARCH=$(uname -m)
-NAME="typingpet-$VERSION-$ARCH"
+NAME="typingpet-$VERSION-$ARCH${TARGET_SUFFIX:+-}${TARGET_SUFFIX:-}"
 OUT=${1:-"$project_dir/dist"}
 STAGE="$OUT/$NAME"
 

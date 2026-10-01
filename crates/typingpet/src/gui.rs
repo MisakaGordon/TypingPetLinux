@@ -289,7 +289,6 @@ impl PetUi {
         install_css();
 
         let picture = gtk::Picture::new();
-        picture.set_content_fit(gtk::ContentFit::Contain);
         picture.set_can_shrink(true);
 
         let fixed = gtk::Fixed::new();
@@ -410,12 +409,13 @@ impl PetUi {
             let dump_path = runtime.borrow().options.dump_png.clone();
             gtk::glib::timeout_add_seconds_local(1, move || {
                 let surface_info = match window.surface() {
+                    // scale_factor 是 GDK 4.0 的 API；surface.scale()（含分数缩放）要 4.12。
                     Some(surface) => format!(
-                        "{}x{} mapped={} scale={:.2}",
+                        "{}x{} mapped={} scale_factor={}",
                         surface.width(),
                         surface.height(),
                         surface.is_mapped(),
-                        surface.scale()
+                        surface.scale_factor()
                     ),
                     None => "<none>".to_string(),
                 };
@@ -1294,7 +1294,7 @@ impl PetUi {
 
 pub fn install_css() {
     let provider = gtk::CssProvider::new();
-    provider.load_from_string(
+    provider.load_from_data(
         ".typingpet-window, .typingpet-window.background { background-color: rgba(0,0,0,0); box-shadow: none; }\n\
          .section-title { font-weight: bold; }\n\
          .dim-label { opacity: 0.65; }\n\

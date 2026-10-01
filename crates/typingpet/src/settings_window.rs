@@ -511,21 +511,20 @@ impl SettingsView {
     }
 
     fn import_folder_dialog(self: &Rc<Self>) {
-        let dialog = gtk::FileDialog::builder()
-            .title("选择图片文件夹")
-            .modal(true)
-            .build();
+        // FileChooserNative 是 GTK 4.0 的 API（FileDialog 要 4.10，会把 GTK 下限抬到 4.10）。
+        // 它在 Wayland 下同样走 xdg-desktop-portal。
+        let dialog = gtk::FileChooserNative::new(
+            Some("选择图片文件夹"),
+            Some(self.window()),
+            gtk::FileChooserAction::SelectFolder,
+            Some("选择"),
+            Some("取消"),
+        );
         let ui = self.ui.clone();
         let view = self.clone();
-        let parent = self.window.clone();
-        dialog.select_folder(
-            Some(&parent),
-            gtk::gio::Cancellable::NONE,
-            move |result| match result {
-                Ok(file) => {
-                    let Some(path) = file.path() else {
-                        return;
-                    };
+        dialog.connect_response(move |dialog, response| {
+            if response == gtk::ResponseType::Accept {
+                if let Some(path) = dialog.file().and_then(|file| file.path()) {
                     match ui.import_folder(&path) {
                         Ok(set) => {
                             *view.selected_set.borrow_mut() = Some(set.id.clone());
@@ -534,13 +533,10 @@ impl SettingsView {
                         Err(error) => view.show_error("导入失败", &error),
                     }
                 }
-                Err(error) => {
-                    if !error.matches(gtk::gio::IOErrorEnum::Cancelled) {
-                        view.show_error("导入失败", &error.to_string());
-                    }
-                }
-            },
-        );
+            }
+            dialog.destroy();
+        });
+        dialog.show();
     }
 
     fn rename_selected_set(self: &Rc<Self>) {
@@ -619,31 +615,34 @@ impl SettingsView {
             .map(|set| set.name)
             .unwrap_or_else(|| "该图片集".to_string());
 
-        let alert = gtk::AlertDialog::builder()
-            .message(format!("从列表中移除「{name}」？"))
-            .detail("原始图片文件不会被删除。")
-            .buttons(["移除", "取消"])
-            .cancel_button(1)
-            .default_button(1)
+        let dialog = gtk::MessageDialog::builder()
+            .message_type(gtk::MessageType::Question)
+            .buttons(gtk::ButtonsType::None)
+            .text(format!("从列表中移除「{name}」？"))
+            .secondary_text("原始图片文件不会被删除。")
+            .modal(true)
+            .transient_for(self.window())
             .build();
-        let view = self.clone();
-        alert.choose(
-            Some(self.window()),
-            gtk::gio::Cancellable::NONE,
-            move |result| {
-                if let Ok(0) = result {
+        dialog.add_button("取消", gtk::ResponseType::Cancel);
+        dialog.add_button("移除", gtk::ResponseType::Accept);
+        dialog.set_default_response(gtk::ResponseType::Cancel);
+        {
+            let view = self.clone();
+            dialog.connect_response(move |dialog, response| {
+                if response == gtk::ResponseType::Accept {
                     if let Err(error) = view.ui.delete_set(&id) {
                         view.show_error("删除失败", &error);
                     }
                     *view.selected_set.borrow_mut() = None;
                     view.refresh();
                 }
-            },
-        );
+                dialog.destroy();
+            });
+        }
+        dialog.present();
     }
 
     // ---------- 键反应 ----------
-
     fn rebuild_rules(self: &Rc<Self>) {
         while let Some(child) = self.rules_list.first_child() {
             self.rules_list.remove(&child);
@@ -698,38 +697,41 @@ impl SettingsView {
     }
 
     fn add_rule_dialog(self: &Rc<Self>) {
-        let dialog = gtk::FileDialog::builder()
-            .title("选择该按键要显示的图片")
-            .modal(true)
-            .build();
+        let dialog = gtk::FileChooserNative::new(
+            Some("选择该按键要显示的图片"),
+            Some(self.window()),
+            gtk::FileChooserAction::Open,
+            Some("选择"),
+            Some("取消"),
+        );
         let filter = gtk::FileFilter::new();
         filter.set_name(Some("图片"));
         filter.add_mime_type("image/*");
-        let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
-        filters.append(&filter);
-        dialog.set_filters(Some(&filters));
+        dialog.add_filter(&filter);
 
         let ui = self.ui.clone();
-        dialog.open(
-            Some(self.window()),
-            gtk::gio::Cancellable::NONE,
-            move |result| {
-                if let Ok(file) = result {
-                    if let Some(path) = file.path() {
-                        ui.begin_capture(path);
-                    }
+        dialog.connect_response(move |dialog, response| {
+            if response == gtk::ResponseType::Accept {
+                if let Some(path) = dialog.file().and_then(|file| file.path()) {
+                    ui.begin_capture(path);
                 }
-            },
-        );
+            }
+            dialog.destroy();
+        });
+        dialog.show();
     }
 
     fn show_error(&self, title: &str, detail: &str) {
-        let alert = gtk::AlertDialog::builder()
-            .message(title)
-            .detail(detail)
-            .buttons(["确定"])
+        let dialog = gtk::MessageDialog::builder()
+            .message_type(gtk::MessageType::Error)
+            .buttons(gtk::ButtonsType::Close)
+            .text(title)
+            .secondary_text(detail)
+            .modal(true)
+            .transient_for(&self.window)
             .build();
-        alert.show(Some(&self.window));
+        dialog.connect_response(|dialog, _| dialog.destroy());
+        dialog.present();
     }
 }
 

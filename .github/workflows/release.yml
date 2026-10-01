@@ -1,0 +1,100 @@
+name: Release
+
+# 打 tag（v*）时在多个发行版基线里各构建一份产物，并挂到 GitHub Release。
+#
+# 为什么按发行版分别构建：glibc 与 GTK 的版本是**构建期**绑定的 —— 在旧基线里构建出来的二进制
+# 能跑在更新的系统上（manylinux 思路），反之不行。所以基线越旧，覆盖面越广。
+# 目前代码只依赖 GTK 4.6+ 的 API，因此 Debian 12（GTK 4.8）这类基线也能顺利编译。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: debian12,   image: "debian:12",        family: apt }
+          - { name: ubuntu2204, image: "ubuntu:22.04",     family: apt }
+          - { name: rockylinux9, image: "rockylinux:9",    family: dnf }
+          - { name: fedora42,   image: "fedora:42",        family: dnf }
+          - { name: arch,       image: "archlinux:latest", family: pacman }
+    steps:
+      # actions/checkout 需要 git，而精简镜像里通常没有，先装
+      - name: 准备（git / curl / ca-certificates）
+        run: |
+          if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq git curl ca-certificates
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y -q git curl ca-certificates
+          elif command -v pacman >/dev/null 2>&1; then
+            pacman -Sy --noconfirm --needed git curl ca-certificates
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: 构建 + 打包 + 自检
+        env:
+          TARGET_SUFFIX: ${{ matrix.name }}
+          CARGO_TARGET_DIR: /tmp/target
+        run: sh packaging/container-build.sh ${{ matrix.family }}
+
+      - name: 保存构建信息
+        run: cat dist/BUILD-INFO.txt 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: typingpet-${{ matrix.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    name: 发布
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 列出产物
+        run: ls -lh artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          body: |
+            ## 安装
+
+            挑一个和你系统匹配的产物（名字里的发行版是**构建基线**，基线越旧覆盖面越广）：
+
+            | 产物后缀 | 适用 |
+            |---|---|
+            | `debian12` | Debian 12+、Ubuntu 22.04+、Linux Mint 21+ 等 |
+            | `ubuntu2204` | 同上（与 debian12 覆盖面接近） |
+            | `rockylinux9` | RHEL 9 / Alma 9 / Rocky 9 及其衍生版 |
+            | `fedora42` | Fedora 40+、openSUSE Tumbleweed 等较新系统 |
+            | `arch` | Arch / Manjaro 等滚动发行版 |
+
+            ```sh
+            tar xf typingpet-*.tar.gz && cd typingpet-*/
+            sh install.sh --check        # 先看兼容性
+            sh install.sh                # 装到 ~/.local
+            sudo sh install.sh --system  # 装到 /usr/local（可顺带装 udev 键输入权限规则）
+            ```
+
+            键输入需要一次权限配置（见 `install.sh` 结尾提示或包内 README）。
+            每个包的 `BUILD-INFO.txt` 里写了它的 glibc / GTK 下限。
