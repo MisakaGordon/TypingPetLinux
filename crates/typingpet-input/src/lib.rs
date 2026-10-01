@@ -12,6 +12,8 @@ pub mod evdev_source;
 pub mod x11;
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::Mutex;
+use std::time::Instant;
 use std::thread;
 use std::time::Duration;
 use typingpet_core::keys::{KeyModifiers, KeyStroke};
@@ -42,6 +44,8 @@ pub struct ScreenSize {
 pub enum Backend {
     Evdev,
     Mock,
+    /// 拿不到键盘设备（缺权限 / 容器里没有 /dev/input）：程序继续跑，后台自动重试。
+    Unavailable,
 }
 
 impl Backend {
@@ -49,36 +53,125 @@ impl Backend {
         match self {
             Self::Evdev => "evdev",
             Self::Mock => "mock",
+            Self::Unavailable => "unavailable",
         }
     }
+}
+
+/// 不可用时多久重试一次。
+const RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
+struct InputState {
+    receiver: Option<Receiver<KeyEvent>>,
+    backend: Backend,
+    description: String,
+    last_attempt: Option<Instant>,
+    reason: Option<String>,
 }
 
 /// 运行中的输入源：一个后台线程 + 一个 channel。
+///
+/// 拿不到键盘设备时**不会失败**：退化成 `Backend::Unavailable`，
+/// 桌宠照常显示（悬停/拖动/设置/托盘都能用），并由 `try_recv` 每 2 秒自动重试，
+/// 用户装好 udev 规则或重新登录后无需重启程序即可恢复。
 pub struct InputHandle {
-    receiver: Receiver<KeyEvent>,
-    backend: Backend,
-    description: String,
+    state: Mutex<InputState>,
 }
 
 impl InputHandle {
+    fn from_parts(receiver: Option<Receiver<KeyEvent>>, backend: Backend, description: String, reason: Option<String>) -> Self {
+        Self {
+            state: Mutex::new(InputState {
+                receiver,
+                backend,
+                description,
+                last_attempt: Some(Instant::now()),
+                reason,
+            }),
+        }
+    }
+
     pub fn backend(&self) -> Backend {
-        self.backend
+        self.state.lock().map(|state| state.backend).unwrap_or(Backend::Unavailable)
     }
 
-    pub fn description(&self) -> &str {
-        &self.description
+    pub fn description(&self) -> String {
+        self.state
+            .lock()
+            .map(|state| state.description.clone())
+            .unwrap_or_default()
     }
 
+    pub fn is_connected(&self) -> bool {
+        self.backend() != Backend::Unavailable
+    }
+
+    /// 不可用时的原因（用于 UI 提示）；可用时为 None。
+    pub fn unavailable_reason(&self) -> Option<String> {
+        self.state.lock().ok().and_then(|state| state.reason.clone())
+    }
+
+    /// 取一个按键事件。不可用时会按节流自动重连。
     pub fn try_recv(&self) -> Option<KeyEvent> {
-        self.receiver.try_recv().ok()
+        {
+            let Ok(state) = self.state.lock() else {
+                return None;
+            };
+            if let Some(receiver) = &state.receiver {
+                return receiver.try_recv().ok();
+            }
+            let due = state
+                .last_attempt
+                .map(|at| at.elapsed() >= RETRY_INTERVAL)
+                .unwrap_or(true);
+            if !due {
+                return None;
+            }
+        }
+
+        // 到点重试：不持锁做打开动作（内部会 spawn 线程），避免阻塞调用方
+        if let Ok(mut state) = self.state.lock() {
+            state.last_attempt = Some(Instant::now());
+        }
+        match open_evdev() {
+            Ok(handle) => {
+                let description = handle.description();
+                if let Ok(mut state) = self.state.lock() {
+                    state.receiver = handle.take_receiver();
+                    state.backend = Backend::Evdev;
+                    state.description = description.clone();
+                    state.reason = None;
+                }
+                println!("键输入已连接：{description}");
+            }
+            Err(error) => {
+                if let Ok(mut state) = self.state.lock() {
+                    state.reason = Some(error.to_string());
+                }
+            }
+        }
+        None
     }
 
     pub fn recv_timeout(&self, timeout: Duration) -> Option<KeyEvent> {
-        match self.receiver.recv_timeout(timeout) {
-            Ok(event) => Some(event),
-            Err(RecvTimeoutError::Timeout) => None,
-            Err(RecvTimeoutError::Disconnected) => None,
+        {
+            let Ok(state) = self.state.lock() else {
+                return None;
+            };
+            if let Some(receiver) = &state.receiver {
+                return match receiver.recv_timeout(timeout) {
+                    Ok(event) => Some(event),
+                    Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => None,
+                };
+            }
         }
+        // 不可用：睡一小会儿再走重试逻辑
+        thread::sleep(timeout.min(Duration::from_millis(200)));
+        self.try_recv()
+    }
+
+    fn take_receiver(&self) -> Option<Receiver<KeyEvent>> {
+        self.state.lock().ok().and_then(|mut state| state.receiver.take())
     }
 }
 
@@ -86,11 +179,25 @@ impl InputHandle {
 pub fn open_evdev() -> anyhow::Result<InputHandle> {
     let (sender, receiver) = mpsc::channel();
     let devices = evdev_source::spawn_keyboard_listeners(sender)?;
-    Ok(InputHandle {
-        receiver,
-        backend: Backend::Evdev,
-        description: format!("evdev: {} keyboard device(s)", devices),
-    })
+    Ok(InputHandle::from_parts(
+        Some(receiver),
+        Backend::Evdev,
+        format!("evdev: {devices} keyboard device(s)"),
+        None,
+    ))
+}
+
+/// 打不开键盘设备时**不报错**，返回一个会自动重试的句柄（桌宠照常显示）。
+pub fn open_evdev_or_retry() -> InputHandle {
+    match open_evdev() {
+        Ok(handle) => handle,
+        Err(error) => InputHandle::from_parts(
+            None,
+            Backend::Unavailable,
+            format!("不可用（{error}）"),
+            Some(error.to_string()),
+        ),
+    }
 }
 
 /// 用于测试/演示的 mock 输入源：按脚本回放按键。
@@ -112,11 +219,12 @@ pub fn open_mock(script: Vec<KeyStroke>, interval: Duration) -> InputHandle {
             let _ = index;
         }
     });
-    InputHandle {
-        receiver,
-        backend: Backend::Mock,
-        description: format!("mock: {count} scripted keystroke(s)"),
-    }
+    InputHandle::from_parts(
+        Some(receiver),
+        Backend::Mock,
+        format!("mock: {count} scripted keystroke(s)"),
+        None,
+    )
 }
 
 /// 判断当前是否运行在 X11 会话下（有 DISPLAY 且没有 Wayland socket）。

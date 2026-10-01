@@ -158,6 +158,13 @@ sh packaging/build-matrix.sh          # 本地 podman/docker，多基线各出�
 
 ## 3. 键输入权限（Wayland 没有 `CGEventTap` 等价物）
 
+> **拿不到键盘设备时不再退出**（改动来自一次真实反馈：在容器里启动只得到一行
+> `global keyboard capture unavailable` 就退出，用户看不出该做什么）：
+> 退化为 `Backend::Unavailable` 继续运行（桌宠照常显示），`try_recv` 每 2 秒自动重连，
+> 装好权限后无需重启即恢复；状态显示在托盘与设置窗口里。
+> 另有 `--check-input`（设备列表 + 权限 + 修复命令）与 `--require-input`（保持快速失败）。
+
+
 macOS 用 `CGEventTap` 全局监听；Linux 上要在 **X11 与 Wayland 都拿到"任意按键"**，只能用 evdev 直读
 `/dev/input/event*`。装一条 udev 规则即可（仅对当前登录用户授予 ACL，登出失效）：
 

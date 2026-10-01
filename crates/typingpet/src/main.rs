@@ -39,6 +39,10 @@ pub struct Options {
     pub position: Option<(f64, f64)>,
     pub reset_position: bool,
     pub open_settings: Option<bool>,
+    /// 拿不到键盘设备时直接失败退出（脚本/CI 用；默认是降级运行并自动重试）
+    pub require_input: bool,
+    /// 只做键输入自检然后退出
+    pub check_input: bool,
     pub settings_tab: u32,
     pub avoid_pointer: bool,
     pub simulate_pointer: Option<(f64, f64)>,
@@ -61,6 +65,8 @@ impl Default for Options {
             position: None,
             reset_position: false,
             open_settings: None,
+            require_input: false,
+            check_input: false,
             settings_tab: 0,
             avoid_pointer: false,
             simulate_pointer: None,
@@ -85,6 +91,8 @@ impl Options {
                 }
                 "--reset-position" => options.reset_position = true,
                 "--settings" => options.open_settings = Some(true),
+                "--require-input" => options.require_input = true,
+                "--check-input" => options.check_input = true,
                 "--avoid-pointer" => options.avoid_pointer = true,
                 "--simulate-pointer" => {
                     let value = args.next().context("--simulate-pointer needs X,Y")?;
@@ -161,6 +169,8 @@ fn print_help() {
            --position X,Y      强制宠物左上角坐标（屏幕逻辑像素）\n\
            --reset-position    忽略已保存的位置，回到主显示器右下角\n\
            --settings          启动时直接打开设置窗口\n\
+           --check-input       只做键输入自检（设备/权限），然后退出\n\
+           --require-input     拿不到键盘设备就报错退出（默认改为降级运行并自动重试）\n\
            --settings-tab T    设置窗口初始标签页：general | gallery | keys\n\
            --avoid-pointer     启动即开启「位置锁定中躲避光标」\n\
            --simulate-pointer X,Y  把光标假装在 (X,Y)（调试躲避逻辑用）\n\
@@ -236,9 +246,18 @@ impl Runtime {
 
         let input = match options.mock_keystrokes {
             Some(count) => typingpet_input::open_mock(mock_script(count), Duration::from_millis(120)),
-            None => typingpet_input::open_evdev()
-                .context("global keyboard capture unavailable")?,
+            None if options.require_input => typingpet_input::open_evdev()
+                .context("global keyboard capture unavailable（--require-input 指定了必须可用）")?,
+            None => typingpet_input::open_evdev_or_retry(),
         };
+        if !input.is_connected() {
+            // 不再直接退出：桌宠照常显示，只是暂时不响应按键，后台每 2 秒重试
+            println!();
+            println!("⚠️  键输入暂时不可用：{}", input.description());
+            println!("    桌宠会继续显示（悬停/拖动/设置/托盘都正常），程序每 2 秒自动重试。");
+            print_input_help();
+            println!();
+        }
 
         Ok(Self {
             options,
@@ -289,8 +308,56 @@ fn mock_script(count: usize) -> Vec<KeyStroke> {
         .collect()
 }
 
+/// 键输入不可用时的可执行指引（尽量给出能直接复制的命令）。
+pub fn print_input_help() {
+    println!("    排查与修复：");
+    println!("      · 先看设备与权限：  typingpet --check-input");
+    println!("      · 装 udev 规则（只授权当前登录用户，登出失效）：");
+    println!("          sudo install -m644 <包里的>/share/typingpet/60-typingpet-input.rules \\");
+    println!("               /etc/udev/rules.d/60-typingpet-input.rules");
+    println!("          sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=input");
+    println!("      · 或加入 input 组（安全性更低，需重新登录）：");
+    println!("          sudo usermod -aG input \"$USER\"");
+    println!("      · 如果你在容器/沙箱里运行（例如 DSH 会话），里面通常没有 /dev/input，");
+    println!("        请在宿主桌面会话里运行本程序。");
+}
+
+/// `--check-input`：打印设备、权限与结论。
+pub fn check_input() -> Result<()> {
+    println!("== TypingPet 键输入自检 ==");
+    println!("会话类型 : {}", typingpet_input::session_kind());
+    println!("DISPLAY  : {}", std::env::var("DISPLAY").unwrap_or_else(|_| "<未设置>".into()));
+    println!();
+    println!("/dev/input 下的设备：");
+    let devices = typingpet_input::evdev_source::describe_devices();
+    if devices.is_empty() {
+        println!("  （看不到任何输入设备：/dev/input 不存在或为空）");
+    } else {
+        for line in &devices {
+            println!("  {line}");
+        }
+    }
+    println!();
+    match typingpet_input::open_evdev() {
+        Ok(handle) => {
+            println!("✅ 键输入可用：{}", handle.description());
+            println!("   现在可以启动桌宠：typingpet");
+            Ok(())
+        }
+        Err(error) => {
+            println!("❌ 键输入不可用：{error}");
+            println!();
+            print_input_help();
+            std::process::exit(2);
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let options = Options::parse(std::env::args().skip(1))?;
+    if options.check_input {
+        return check_input();
+    }
 
     #[cfg(feature = "gui")]
     if !options.headless {

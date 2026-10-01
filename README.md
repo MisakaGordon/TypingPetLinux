@@ -92,6 +92,24 @@ TARGETS="debian12|debian:12|apt" sh packaging/build-matrix.sh   # 只跑一个�
 > 注：若目标镜像不在可达的 registry 上（部分地区直连 docker.io 不通），
 > 脚本默认用 `docker.m.daocloud.io` 作为镜像源；可用 `TARGETS` 覆盖成你自己的镜像。
 
+### 键输入不可用怎么办
+
+程序**不会因此退出**：桌宠照常显示（悬停/拖动/设置/托盘都能用），只是暂时不响应按键，
+并且每 2 秒自动重试 —— 装好权限后**无需重启**即恢复。同时打印一段可复制的修复指引。
+
+```bash
+typingpet --check-input     # 一次看清：/dev/input 设备列表、权限、结论、修复命令
+```
+
+三个常见原因：
+
+1. **没装 udev 规则**（安装时用了 `--no-udev`，或走的用户级安装）→ 按 `--check-input` 给的命令装一次；
+2. **用户不在 input 组**（老办法）→ `sudo usermod -aG input "$USER"` 后重新登录；
+3. **在容器/沙箱里运行** → 容器里通常没有 `/dev/input`（或只有空目录），必须在**宿主的桌面会话**里运行。
+   DSH 会话里的终端就是容器环境，属于这一类。
+
+脚本/CI 想保持"拿不到键盘就失败"的老行为，加 `--require-input`。
+
 ### 常用参数
 
 ```
@@ -101,6 +119,8 @@ TARGETS="debian12|debian:12|apt" sh packaging/build-matrix.sh   # 只跑一个�
 --scale F           本次会话缩放覆盖    --position X,Y   本次会话初始坐标
 --click-through     启动即位置锁定（点击穿透）
 --avoid-pointer     启动即开启躲避光标
+--check-input       只做键输入自检（设备/权限/修复命令），然后退出
+--require-input     拿不到键盘设备就报错退出（默认降级运行并自动重试）
 --layer L           layer-shell 层级：top(默认) | overlay | bottom
 --no-layer-shell    强制普通无边框窗口
 --dump-png PATH     把窗口内容渲染成 PNG（自检）

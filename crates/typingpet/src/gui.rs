@@ -229,6 +229,7 @@ pub fn run(options: Options) -> Result<()> {
         let input_status = match runtime.input.backend() {
             typingpet_input::Backend::Evdev => "evdev（可用）".to_string(),
             typingpet_input::Backend::Mock => "mock（脚本按键）".to_string(),
+            typingpet_input::Backend::Unavailable => "不可用（缺权限/无设备，重试中）".to_string(),
         };
         let tray: SharedTray = Arc::new(std::sync::Mutex::new(tray::TrayState::new(
             input_status,
@@ -477,9 +478,15 @@ impl PetUi {
     }
 
     pub fn input_status(&self) -> String {
-        match self.runtime.borrow().input.backend() {
-            typingpet_input::Backend::Evdev => "evdev（可用）".to_string(),
+        let runtime = self.runtime.borrow();
+        let input = &runtime.input;
+        match input.backend() {
+            typingpet_input::Backend::Evdev => format!("evdev（可用：{}）", input.description()),
             typingpet_input::Backend::Mock => "mock（脚本按键，未接真实键盘）".to_string(),
+            typingpet_input::Backend::Unavailable => format!(
+                "不可用：{}（程序每 2 秒自动重试；修复权限后无需重启）",
+                input.unavailable_reason().unwrap_or_else(|| "缺权限或无设备".to_string())
+            ),
         }
     }
 
