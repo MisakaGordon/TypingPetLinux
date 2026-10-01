@@ -25,6 +25,20 @@ pub fn pointer_position() -> Option<PointerPosition> {
     })
 }
 
+/// 把 X11 光标移动到屏幕绝对坐标。
+///
+/// 仅用于本地测试悬停/躲避逻辑（Wayland 下协议不允许，只能在 X11 会话里用）。
+/// 注意：这会真的移动光标。
+pub fn warp_pointer(x: i16, y: i16) -> Option<()> {
+    let (connection, screen_number) = connect()?;
+    let root = connection.setup().roots.get(screen_number)?.root;
+    connection
+        .warp_pointer(x11rb::NONE, root, 0, 0, 0, 0, x, y)
+        .ok()?;
+    connection.flush().ok()?;
+    Some(())
+}
+
 pub fn screen_size() -> Option<ScreenSize> {
     let (connection, screen_number) = connect()?;
     let screen = connection.setup().roots.get(screen_number)?;

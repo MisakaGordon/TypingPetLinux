@@ -27,6 +27,25 @@ fn main() {
         return;
     }
 
+    // --warp X,Y：把光标挪到屏幕坐标（X11 专用，测试悬停/躲避用）
+    if let Some(index) = args.iter().position(|arg| arg == "--warp") {
+        let value = args.get(index + 1).expect("--warp 需要 X,Y");
+        let (x, y) = value.split_once(',').expect("--warp 需要 X,Y");
+        let x: i16 = x.trim().parse().expect("X 需要是整数");
+        let y: i16 = y.trim().parse().expect("Y 需要是整数");
+        match typingpet_input::x11::warp_pointer(x, y) {
+            Some(()) => println!("已把光标移动到 ({x},{y})"),
+            None => {
+                eprintln!("移动失败：当前不是 X11 会话（Wayland 下协议不允许）");
+                std::process::exit(2);
+            }
+        }
+        if let Some(pointer) = typingpet_input::pointer_position() {
+            println!("复查位置: ({}, {})", pointer.x, pointer.y);
+        }
+        return;
+    }
+
     let seconds: Option<u64> = args.iter().find_map(|arg| arg.parse().ok());
     match typingpet_input::open_evdev() {
         Ok(handle) => {
